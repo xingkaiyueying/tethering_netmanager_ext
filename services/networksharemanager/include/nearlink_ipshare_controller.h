@@ -12,7 +12,7 @@
 #include <string>
 
 #include "dhcp_result_event.h"
-#include "nearlink_ipshare_status.h"
+#include "nearlink_ip_share_status.h"
 #include "networkshare_configuration.h"
 
 namespace OHOS::Nearlink {

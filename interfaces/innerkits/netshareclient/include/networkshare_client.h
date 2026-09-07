@@ -20,7 +20,7 @@
 
 #include "inetwork_share_service.h"
 #include "isharing_event_callback.h"
-#include "nearlink_ipshare_status.h"
+#include "nearlink_ip_share_status.h"
 #include "parcel.h"
 #include "singleton.h"
 #include "system_ability_load_callback_stub.h"

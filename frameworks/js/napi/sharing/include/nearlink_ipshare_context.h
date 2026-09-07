@@ -7,7 +7,7 @@
 #define NETMANAGER_EXT_NEARLINK_IPSHARE_CONTEXT_H
 
 #include "base_context.h"
-#include "nearlink_ipshare_status.h"
+#include "nearlink_ip_share_status.h"
 
 namespace OHOS::NetManagerStandard {
 class NearlinkIpShareContext final : public BaseContext {

@@ -21,7 +21,7 @@
 
 #include "net_handle.h"
 #include "net_manager_ext_constants.h"
-#include "nearlink_ipshare_status.h"
+#include "nearlink_ip_share_status.h"
 #include "tethering_ipc_interface_code.h"
 
 namespace OHOS {

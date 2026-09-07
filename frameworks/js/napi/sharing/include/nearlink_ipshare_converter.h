@@ -8,7 +8,7 @@
 
 #include <napi/native_api.h>
 
-#include "nearlink_ipshare_status.h"
+#include "nearlink_ip_share_status.h"
 
 namespace OHOS::NetManagerStandard {
 class NearlinkIpShareConverter final {

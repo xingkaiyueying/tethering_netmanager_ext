@@ -26,7 +26,7 @@
 #include "errorcode_convertor.h"
 #include "network_share_service_stub.h"
 #include "networkshare_tracker.h"
-#include "nearlink_ipshare_status.h"
+#include "nearlink_ip_share_status.h"
 #include "ffrt.h"
 
 namespace OHOS {

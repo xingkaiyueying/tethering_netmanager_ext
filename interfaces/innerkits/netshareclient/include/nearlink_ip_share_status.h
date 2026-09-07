@@ -3,8 +3,8 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  */
-#ifndef NETMANAGER_EXT_NEARLINK_IPSHARE_STATUS_H
-#define NETMANAGER_EXT_NEARLINK_IPSHARE_STATUS_H
+#ifndef NETMANAGER_EXT_NEARLINK_IP_SHARE_STATUS_H
+#define NETMANAGER_EXT_NEARLINK_IP_SHARE_STATUS_H
 
 #include <cstdint>
 #include <new>
@@ -76,4 +76,4 @@ public:
     }
 };
 } // namespace OHOS::NetManagerStandard
-#endif // NETMANAGER_EXT_NEARLINK_IPSHARE_STATUS_H
+#endif // NETMANAGER_EXT_NEARLINK_IP_SHARE_STATUS_H

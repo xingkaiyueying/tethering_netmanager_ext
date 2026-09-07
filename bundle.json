@@ -141,7 +141,7 @@
                     "header": {
                         "header_files": [
                             "netshareclient/include/networkshare_client.h",
-                            "netshareclient/include/nearlink_ipshare_status.h",
+                            "netshareclient/include/nearlink_ip_share_status.h",
                             "netshareclient/include/networkshare_constants.h",
                             "netshareclient/include/proxy/ipccallback/sharing_event_callback_stub.h"
                         ],
