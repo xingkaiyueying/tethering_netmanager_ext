@@ -41,6 +41,7 @@ ohos_shared_library("net_tether_manager") {
   branch_protector_ret = "pac_ret"
 
   sources = [
+    "$NETWORKSHAREMANAGER_INNERKITS_SOURCE_DIR/src/proxy/ipccallback/nearlink_ip_share_event_callback_proxy.cpp",
     "$NETWORKSHAREMANAGER_INNERKITS_SOURCE_DIR/src/proxy/ipccallback/sharing_event_callback_proxy.cpp",
     "src/nearlink_ipshare_controller.cpp",
     "src/networkshare_configuration.cpp",
@@ -167,6 +168,7 @@ ohos_static_library("net_tether_manager_static") {
   branch_protector_ret = "pac_ret"
 
   sources = [
+    "$NETWORKSHAREMANAGER_INNERKITS_SOURCE_DIR/src/proxy/ipccallback/nearlink_ip_share_event_callback_proxy.cpp",
     "$NETWORKSHAREMANAGER_INNERKITS_SOURCE_DIR/src/proxy/ipccallback/sharing_event_callback_proxy.cpp",
     "src/nearlink_ipshare_controller.cpp",
     "src/networkshare_configuration.cpp",

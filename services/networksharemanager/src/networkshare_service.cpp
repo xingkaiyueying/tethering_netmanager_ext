@@ -289,9 +289,6 @@ int32_t NetworkShareService::RegisterSharingEvent(const sptr<ISharingEventCallba
         return NETMANAGER_EXT_ERR_PERMISSION_DENIED;
     }
     auto ret = NetworkShareTracker::GetInstance().RegisterSharingEvent(callback);
-    if (ret == NETMANAGER_EXT_SUCCESS) {
-        NearlinkIpShareController::GetInstance()->ReplayStatus(callback);
-    }
     HiviewDFX::XCollie::GetInstance().CancelTimer(id);
     return ret;
 }
@@ -359,6 +356,33 @@ int32_t NetworkShareService::GetNearlinkIpShareStatus(NearlinkIpShareStatus &sta
         return permission;
     }
     return NearlinkIpShareController::GetInstance()->GetStatus(status);
+}
+
+int32_t NetworkShareService::RegisterNearlinkIpShareEvent(
+    const sptr<INearlinkIpShareEventCallback> &callback)
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
+    if (!NearlinkIpShareController::GetInstance()->Init()) {
+        return NETMANAGER_EXT_ERR_OPERATION_FAILED;
+    }
+    int32_t ret = NetworkShareTracker::GetInstance().RegisterNearlinkIpShareEvent(callback);
+    if (ret == NETMANAGER_EXT_SUCCESS) {
+        NearlinkIpShareController::GetInstance()->ReplayStatus(callback);
+    }
+    return ret;
+}
+
+int32_t NetworkShareService::UnregisterNearlinkIpShareEvent(
+    const sptr<INearlinkIpShareEventCallback> &callback)
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
+    return NetworkShareTracker::GetInstance().UnregisterNearlinkIpShareEvent(callback);
 }
 
 int32_t NetworkShareService::UnregisterSharingEvent(const sptr<ISharingEventCallback>& callback)

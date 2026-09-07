@@ -27,6 +27,7 @@ namespace NetManagerStandard {
 NetShareObserverWrapper::NetShareObserverWrapper()
 {
     observer_ = new NetShareCallbackObserver();
+    nearlinkObserver_ = new NearlinkIpShareCallbackObserver();
     manager_ = std::make_shared<EventManager>();
 }
 
@@ -48,9 +49,14 @@ napi_value NetShareObserverWrapper::On(napi_env env, napi_callback_info info,
     const std::string event = NapiUtils::GetStringFromValueUtf8(env, params[ARG_INDEX_0]);
     NETMANAGER_EXT_LOGI("NetworkShare RegisterSharingEvent event = %{public}s", event.c_str());
     manager_->AddListener(env, event, params[ARG_INDEX_1], false, asyncCallback);
-    auto ret = Register();
+    bool isNearlink = event == EVENT_NEARLINK_IPSHARE_STATE_CHANGE;
+    auto ret = isNearlink ? RegisterNearlink() : Register();
     if (ret == NETMANAGER_EXT_SUCCESS) {
-        registed_ = true;
+        if (isNearlink) {
+            nearlinkRegisted_ = true;
+        } else {
+            registed_ = true;
+        }
     } else {
         manager_->DeleteListener(event, params[ARG_INDEX_1]);
         NETMANAGER_EXT_LOGE("RegisterSharingEvent error = %{public}d", ret);
@@ -97,7 +103,18 @@ napi_value NetShareObserverWrapper::Off(napi_env env, napi_callback_info info,
         manager_->DeleteListener(event);
     }
 
-    if (manager_->IsListenerListEmpty()) {
+    if (event == EVENT_NEARLINK_IPSHARE_STATE_CHANGE && nearlinkRegisted_ &&
+        !manager_->HasEventListener(static_cast<std::string>(EVENT_NEARLINK_IPSHARE_STATE_CHANGE))) {
+        int32_t result = DelayedSingleton<NetworkShareClient>::GetInstance()->UnregisterNearlinkIpShareEvent(
+            nearlinkObserver_);
+        if (result != NETMANAGER_EXT_SUCCESS) {
+            napi_throw_error(env, std::to_string(result).c_str(), "Unregister NearLink event failed");
+            return NapiUtils::GetUndefined(env);
+        }
+        nearlinkRegisted_ = false;
+    }
+
+    if (event != EVENT_NEARLINK_IPSHARE_STATE_CHANGE && registed_ && !HasSharingEventListener()) {
         int32_t result = DelayedSingleton<NetworkShareClient>::GetInstance()->UnregisterSharingEvent(observer_);
         if (result != NETMANAGER_EXT_SUCCESS) {
             NETMANAGER_EXT_LOGE("unregister result = %{public}d", result);
@@ -125,6 +142,21 @@ int32_t NetShareObserverWrapper::Register()
 
     int32_t result = DelayedSingleton<NetworkShareClient>::GetInstance()->RegisterSharingEvent(observer_);
     return result;
+}
+
+int32_t NetShareObserverWrapper::RegisterNearlink()
+{
+    if (nearlinkRegisted_) {
+        return NETMANAGER_EXT_SUCCESS;
+    }
+    return DelayedSingleton<NetworkShareClient>::GetInstance()->RegisterNearlinkIpShareEvent(nearlinkObserver_);
+}
+
+bool NetShareObserverWrapper::HasSharingEventListener() const
+{
+    return manager_->HasEventListener(static_cast<std::string>(EVENT_SHARE_STATE_CHANGE)) ||
+        manager_->HasEventListener(static_cast<std::string>(EVENT_IFACE_SHARE_STATE_CHANGE)) ||
+        manager_->HasEventListener(static_cast<std::string>(EVENT_SHARE_UPSTREAM_CHANGE));
 }
 } // namespace NetManagerStandard
 } // namespace OHOS

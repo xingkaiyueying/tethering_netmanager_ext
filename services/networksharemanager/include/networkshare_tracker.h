@@ -26,6 +26,7 @@
 #include "bluetooth_remote_device.h"
 #endif
 #include "event_handler.h"
+#include "inearlink_ip_share_event_callback.h"
 #include "isharing_event_callback.h"
 #ifdef WIFI_MODOULE
 #include "i_wifi_hotspot_callback.h"
@@ -182,6 +183,8 @@ public:
      * unregister callback
      */
     int32_t UnregisterSharingEvent(sptr<ISharingEventCallback> callback);
+    int32_t RegisterNearlinkIpShareEvent(sptr<INearlinkIpShareEventCallback> callback);
+    int32_t UnregisterNearlinkIpShareEvent(sptr<INearlinkIpShareEventCallback> callback);
 
     /**
      * is need update upstream network
@@ -300,6 +303,7 @@ private:
     std::shared_ptr<NetworkShareMainStateMachine> mainStateMachine_ = nullptr;
     std::map<std::string, std::shared_ptr<NetSharingSubSmState>> subStateMachineMap_;
     std::vector<sptr<ISharingEventCallback>> sharingEventCallback_;
+    std::vector<sptr<INearlinkIpShareEventCallback>> nearlinkIpShareEventCallbacks_;
     ffrt::mutex callbackMutex_;
     std::atomic<bool> isNetworkSharing_{false};
     std::shared_ptr<UpstreamNetworkInfo> upstreamInfo_ = nullptr;

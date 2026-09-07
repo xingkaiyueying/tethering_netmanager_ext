@@ -32,7 +32,6 @@ public:
     virtual void OnInterfaceSharingStateChanged(const SharingIfaceType &type, const std::string &iface,
                                                 const SharingIfaceState &state) override;
     virtual void OnSharingUpstreamChanged(const sptr<NetHandle> netHandle) override;
-    void OnNearlinkIpShareStateChanged(const NearlinkIpShareStatus &status) override;
 
 private:
     static inline BrokerDelegator<SharingEventCallbackProxy> delegator_;

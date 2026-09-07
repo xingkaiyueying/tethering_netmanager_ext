@@ -144,6 +144,8 @@ public:
     int32_t StartNearlinkTerminal(const std::string &gatewayAddress) override;
     int32_t StopNearlinkTerminal() override;
     int32_t GetNearlinkIpShareStatus(NearlinkIpShareStatus &status) override;
+    int32_t RegisterNearlinkIpShareEvent(const sptr<INearlinkIpShareEventCallback> &callback) override;
+    int32_t UnregisterNearlinkIpShareEvent(const sptr<INearlinkIpShareEventCallback> &callback) override;
 
     int32_t GetBundleNameByUid(const int uid, std::string &bundleName);
 

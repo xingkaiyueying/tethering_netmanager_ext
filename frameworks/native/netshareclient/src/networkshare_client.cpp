@@ -58,7 +58,7 @@ const sptr<IRemoteObject> &NetworkShareLoadCallback::GetRemoteObject() const
 }
 
 NetworkShareClient::NetworkShareClient()
-    : networkShareService_(nullptr), deathRecipient_(nullptr), callback_(nullptr) {}
+    : networkShareService_(nullptr), deathRecipient_(nullptr), callback_(nullptr), nearlinkCallback_(nullptr) {}
 
 NetworkShareClient::~NetworkShareClient()
 {
@@ -288,6 +288,40 @@ int32_t NetworkShareClient::GetNearlinkIpShareStatus(NearlinkIpShareStatus &stat
     return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->GetNearlinkIpShareStatus(status);
 }
 
+int32_t NetworkShareClient::RegisterNearlinkIpShareEvent(sptr<INearlinkIpShareEventCallback> callback)
+{
+    if (callback == nullptr) {
+        return NETMANAGER_EXT_ERR_LOCAL_PTR_NULL;
+    }
+    auto proxy = GetProxy();
+    if (proxy == nullptr) {
+        return NETMANAGER_EXT_ERR_GET_PROXY_FAIL;
+    }
+    int32_t ret = proxy->RegisterNearlinkIpShareEvent(callback);
+    if (ret == NETMANAGER_EXT_SUCCESS) {
+        std::lock_guard lock(mutex_);
+        nearlinkCallback_ = callback;
+    }
+    return ret;
+}
+
+int32_t NetworkShareClient::UnregisterNearlinkIpShareEvent(sptr<INearlinkIpShareEventCallback> callback)
+{
+    if (callback == nullptr) {
+        return NETMANAGER_EXT_ERR_LOCAL_PTR_NULL;
+    }
+    auto proxy = GetProxy();
+    if (proxy == nullptr) {
+        return NETMANAGER_EXT_ERR_GET_PROXY_FAIL;
+    }
+    int32_t ret = proxy->UnregisterNearlinkIpShareEvent(callback);
+    if (ret == NETMANAGER_EXT_SUCCESS) {
+        std::lock_guard lock(mutex_);
+        nearlinkCallback_ = nullptr;
+    }
+    return ret;
+}
+
 sptr<INetworkShareService> NetworkShareClient::GetProxy()
 {
     std::lock_guard locker(mutex_);
@@ -342,13 +376,19 @@ void NetworkShareClient::RecoverCallback()
     auto proxy = GetProxy();
     NETMGR_EXT_LOG_D("Get proxy %{public}s, count: %{public}u", proxy == nullptr ? "failed" : "success", count);
     sptr<ISharingEventCallback> localCallback;
+    sptr<INearlinkIpShareEventCallback> localNearlinkCallback;
     {
         std::lock_guard lock(mutex_);
         localCallback = callback_;
+        localNearlinkCallback = nearlinkCallback_;
     }
     if (proxy != nullptr && localCallback != nullptr) {
         int32_t ret = proxy->RegisterSharingEvent(localCallback);
         NETMGR_EXT_LOG_D("Register result %{public}d", ret);
+    }
+    if (proxy != nullptr && localNearlinkCallback != nullptr) {
+        int32_t ret = proxy->RegisterNearlinkIpShareEvent(localNearlinkCallback);
+        NETMGR_EXT_LOG_D("Register NearLink result %{public}d", ret);
     }
 }
 
@@ -360,6 +400,7 @@ void NetworkShareClient::OnRemoteDied(const wptr<IRemoteObject> &remote)
         return;
     }
     sptr<ISharingEventCallback> localCallback;
+    sptr<INearlinkIpShareEventCallback> localNearlinkCallback;
     {
         std::lock_guard lock(mutex_);
         if (networkShareService_ == nullptr) {
@@ -374,11 +415,12 @@ void NetworkShareClient::OnRemoteDied(const wptr<IRemoteObject> &remote)
         local->RemoveDeathRecipient(deathRecipient_);
         networkShareService_ = nullptr;
         localCallback = callback_;
+        localNearlinkCallback = nearlinkCallback_;
     }
 
     std::thread([this]() { this->RestartNetTetheringManagerSysAbility(); }).detach();
 
-    if (localCallback != nullptr) {
+    if (localCallback != nullptr || localNearlinkCallback != nullptr) {
         NETMGR_EXT_LOG_D("on remote died recover callback");
         std::thread t([this]() {
             RecoverCallback();

@@ -130,6 +130,9 @@ int32_t NearlinkIpShareController::IsSupported(const std::string &peerAddress, b
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Support] invalid peer address");
         return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
     }
+    if (!Init()) {
+        return NETMANAGER_EXT_ERR_OPERATION_FAILED;
+    }
     auto result = std::make_shared<std::promise<std::pair<int32_t, bool>>>();
     auto future = result->get_future();
     if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([peerAddress, result]() {
@@ -164,6 +167,10 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Start] role=%{public}d invalid peer address",
             static_cast<int32_t>(role));
         return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
+    }
+    if (!Init()) {
+        NETMGR_EXT_LOG_E("[NearlinkIpShare][Start] controller initialization failed");
+        return NETMANAGER_EXT_ERR_OPERATION_FAILED;
     }
     {
         std::lock_guard lock(mutex_);
@@ -252,7 +259,7 @@ int32_t NearlinkIpShareController::GetStatus(NearlinkIpShareStatus &status) cons
     return NETMANAGER_EXT_SUCCESS;
 }
 
-void NearlinkIpShareController::ReplayStatus(const sptr<ISharingEventCallback> &callback) const
+void NearlinkIpShareController::ReplayStatus(const sptr<INearlinkIpShareEventCallback> &callback) const
 {
     if (callback == nullptr) {
         return;

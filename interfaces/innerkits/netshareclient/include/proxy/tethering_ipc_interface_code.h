@@ -40,7 +40,6 @@ enum class TetheringEventInterfaceCode {
     GLOBAL_SHARING_STATE_CHANGED,
     INTERFACE_SHARING_STATE_CHANGED,
     SHARING_UPSTREAM_CHANGED,
-    NEARLINK_IPSHARE_STATE_CHANGED,
 };
 } // namespace NetManagerStandard
 } // namespace OHOS

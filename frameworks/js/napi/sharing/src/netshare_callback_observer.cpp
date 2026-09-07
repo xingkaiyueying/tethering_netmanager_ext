@@ -78,7 +78,7 @@ void NetShareCallbackObserver::OnSharingUpstreamChanged(const sptr<NetHandle> ne
         static_cast<std::string>(EVENT_SHARE_UPSTREAM_CHANGE), netHandle, SharingUpstreamChangedCallback);
 }
 
-void NetShareCallbackObserver::OnNearlinkIpShareStateChanged(const NearlinkIpShareStatus &status)
+void NearlinkIpShareCallbackObserver::OnNearlinkIpShareStateChanged(const NearlinkIpShareStatus &status)
 {
     auto manager = DelayedSingleton<NetShareObserverWrapper>::GetInstance()->GetEventManager();
     if (!manager->HasEventListener(static_cast<std::string>(EVENT_NEARLINK_IPSHARE_STATE_CHANGE))) {
@@ -119,7 +119,7 @@ napi_value NetShareCallbackObserver::CreateSharingUpstreamChangedParam(napi_env 
     return NapiUtils::GetUndefined(env);
 }
 
-napi_value NetShareCallbackObserver::CreateNearlinkIpShareStateChangedParam(napi_env env, void *data)
+napi_value NearlinkIpShareCallbackObserver::CreateNearlinkIpShareStateChangedParam(napi_env env, void *data)
 {
     if (data == nullptr) {
         return nullptr;
@@ -146,9 +146,25 @@ void NetShareCallbackObserver::SharingUpstreamChangedCallback(uv_work_t *work, i
 }
 
 
-void NetShareCallbackObserver::NearlinkIpShareStateChangedCallback(uv_work_t *work, int status)
+void NearlinkIpShareCallbackObserver::NearlinkIpShareStateChangedCallback(uv_work_t *work, int status)
 {
-    CallbackTemplate<CreateNearlinkIpShareStateChangedParam>(work, status);
+    (void)status;
+    if (work == nullptr) {
+        return;
+    }
+    auto workWrapper = static_cast<UvWorkWrapper *>(work->data);
+    if (workWrapper == nullptr) {
+        delete work;
+        return;
+    }
+    napi_env env = workWrapper->env;
+    auto closeScope = [env](napi_handle_scope scope) { NapiUtils::CloseScope(env, scope); };
+    std::unique_ptr<napi_handle_scope__, decltype(closeScope)> scope(NapiUtils::OpenScope(env), closeScope);
+    napi_value obj = CreateNearlinkIpShareStateChangedParam(env, workWrapper->data);
+    std::pair<napi_value, napi_value> arg = {NapiUtils::GetUndefined(env), obj};
+    workWrapper->manager->Emit(workWrapper->type, arg);
+    delete workWrapper;
+    delete work;
 }
 } // namespace NetManagerStandard
 } // namespace OHOS

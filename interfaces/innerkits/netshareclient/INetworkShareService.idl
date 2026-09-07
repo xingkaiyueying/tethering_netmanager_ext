@@ -14,6 +14,7 @@
  */
 
 interface OHOS.NetManagerStandard.ISharingEventCallback;
+interface OHOS.NetManagerStandard.INearlinkIpShareEventCallback;
 sequenceable OHOS.NetManagerStandard.NearlinkIpShareStatus;
 interface OHOS.NetManagerStandard.INetworkShareService {
     void IsNetworkSharingSupported([out] int supported);
@@ -35,4 +36,6 @@ interface OHOS.NetManagerStandard.INetworkShareService {
     void StartNearlinkTerminal([in] String gatewayAddress);
     void StopNearlinkTerminal();
     void GetNearlinkIpShareStatus([out] NearlinkIpShareStatus status);
+    void RegisterNearlinkIpShareEvent([in] INearlinkIpShareEventCallback cb);
+    void UnregisterNearlinkIpShareEvent([in] INearlinkIpShareEventCallback cb);
 }

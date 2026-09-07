@@ -33,6 +33,9 @@
       "OHOS::NetManagerStandard::NetworkShareClient::StartNearlinkTerminal(std::__h::basic_string<char, std::__h::char_traits<char>, std::__h::allocator<char>> const&)";
       "OHOS::NetManagerStandard::NetworkShareClient::StopNearlinkTerminal()";
       "OHOS::NetManagerStandard::NetworkShareClient::GetNearlinkIpShareStatus(OHOS::NetManagerStandard::NearlinkIpShareStatus&)";
+      "OHOS::NetManagerStandard::NetworkShareClient::RegisterNearlinkIpShareEvent(OHOS::sptr<OHOS::NetManagerStandard::INearlinkIpShareEventCallback>)";
+      "OHOS::NetManagerStandard::NetworkShareClient::UnregisterNearlinkIpShareEvent(OHOS::sptr<OHOS::NetManagerStandard::INearlinkIpShareEventCallback>)";
+      "OHOS::NetManagerStandard::NearlinkIpShareEventCallbackStub::OnRemoteRequest(unsigned int, OHOS::MessageParcel&, OHOS::MessageParcel&, OHOS::MessageOption&)";
       "OHOS::NetManagerStandard::NetworkShareClient::~NetworkShareClient()";
       "OHOS::NetManagerStandard::NetworkShareClient::RegisterSharingEvent(OHOS::sptr<OHOS::NetManagerStandard::ISharingEventCallback>)";
       "OHOS::NetManagerStandard::NetworkShareClient::UnregisterSharingEvent(OHOS::sptr<OHOS::NetManagerStandard::ISharingEventCallback>)";

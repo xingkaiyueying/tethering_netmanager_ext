@@ -21,7 +21,6 @@
 
 #include "net_handle.h"
 #include "net_manager_ext_constants.h"
-#include "nearlink_ip_share_status.h"
 #include "tethering_ipc_interface_code.h"
 
 namespace OHOS {
@@ -32,7 +31,6 @@ public:
     virtual void OnInterfaceSharingStateChanged(const SharingIfaceType &type, const std::string &iface,
                                                 const SharingIfaceState &state) = 0;
     virtual void OnSharingUpstreamChanged(const sptr<NetHandle> netHandle) = 0;
-    virtual void OnNearlinkIpShareStateChanged(const NearlinkIpShareStatus &status) { (void)status; }
 
     DECLARE_INTERFACE_DESCRIPTOR(u"OHOS.NetManagerStandard.INetworkShareService.ISharingEventCallback");
 };

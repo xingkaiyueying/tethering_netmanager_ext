@@ -21,7 +21,7 @@ class NearlinkIpShareStatus;
 }
 
 namespace OHOS::NetManagerStandard {
-class ISharingEventCallback;
+class INearlinkIpShareEventCallback;
 
 class NearlinkIpShareController final : public std::enable_shared_from_this<NearlinkIpShareController> {
 public:
@@ -35,7 +35,7 @@ public:
     int32_t StartTerminal(const std::string &gatewayAddress);
     int32_t StopTerminal();
     int32_t GetStatus(NearlinkIpShareStatus &status) const;
-    void ReplayStatus(const sptr<ISharingEventCallback> &callback) const;
+    void ReplayStatus(const sptr<INearlinkIpShareEventCallback> &callback) const;
 
     void OnNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
     void OnDhcpSuccess(int32_t status, const std::string &iface, const DhcpResult &result);

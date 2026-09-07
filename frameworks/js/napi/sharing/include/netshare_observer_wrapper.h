@@ -40,11 +40,15 @@ public:
 
 private:
     sptr<NetShareCallbackObserver> observer_ = nullptr;
+    sptr<NearlinkIpShareCallbackObserver> nearlinkObserver_ = nullptr;
     std::shared_ptr<EventManager> manager_ = nullptr;
     bool registed_ = false;
+    bool nearlinkRegisted_ = false;
 
 private:
     int32_t Register();
+    int32_t RegisterNearlink();
+    bool HasSharingEventListener() const;
 };
 } // namespace NetManagerStandard
 } // namespace OHOS
