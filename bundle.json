@@ -62,6 +62,7 @@
                 "dhcp",
                 "hilog",
                 "netmanager_base",
+                "nearlink_service",
                 "eventhandler",
                 "bluetooth",
                 "hisysevent",
@@ -140,6 +141,7 @@
                     "header": {
                         "header_files": [
                             "netshareclient/include/networkshare_client.h",
+                            "netshareclient/include/nearlink_ipshare_status.h",
                             "netshareclient/include/networkshare_constants.h",
                             "netshareclient/include/proxy/ipccallback/sharing_event_callback_stub.h"
                         ],
@@ -228,7 +230,8 @@
                 }
             ],
             "test": [
-                "//foundation/communication/netmanager_ext/test:netmanager_ext_test"
+                "//foundation/communication/netmanager_ext/test:netmanager_ext_test",
+                "//foundation/communication/netmanager_ext/test/mytest:sleip_netshare_stage3"
             ]
         }
     }

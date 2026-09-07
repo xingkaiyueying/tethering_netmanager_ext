@@ -34,6 +34,7 @@ constexpr int32_t PARAM_FOUR_OPTIONS_AND_CALLBACK = 5;
 // state change of register
 constexpr std::string_view EVENT_SHARE_STATE_CHANGE = "sharingStateChange";
 constexpr std::string_view EVENT_IFACE_SHARE_STATE_CHANGE = "interfaceSharingStateChange";
+constexpr std::string_view EVENT_NEARLINK_IPSHARE_STATE_CHANGE = "nearlinkIpShareStateChange";
 constexpr std::string_view EVENT_SHARE_UPSTREAM_CHANGE = "sharingUpstreamChange";
 
 constexpr int KEY_UID_ARG = -1;

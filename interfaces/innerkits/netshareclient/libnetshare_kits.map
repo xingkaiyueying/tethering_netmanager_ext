@@ -27,6 +27,12 @@
       "OHOS::NetManagerStandard::NetworkShareClient::GetStatsTxBytes(int&)";
       "OHOS::NetManagerStandard::NetworkShareClient::GetStatsTotalBytes(int&)";
       "OHOS::NetManagerStandard::NetworkShareClient::SetConfigureForShare(bool)";
+      "OHOS::NetManagerStandard::NetworkShareClient::IsNearlinkIpShareSupported(std::__h::basic_string<char, std::__h::char_traits<char>, std::__h::allocator<char>> const&, bool&)";
+      "OHOS::NetManagerStandard::NetworkShareClient::StartNearlinkGateway(std::__h::basic_string<char, std::__h::char_traits<char>, std::__h::allocator<char>> const&)";
+      "OHOS::NetManagerStandard::NetworkShareClient::StopNearlinkGateway()";
+      "OHOS::NetManagerStandard::NetworkShareClient::StartNearlinkTerminal(std::__h::basic_string<char, std::__h::char_traits<char>, std::__h::allocator<char>> const&)";
+      "OHOS::NetManagerStandard::NetworkShareClient::StopNearlinkTerminal()";
+      "OHOS::NetManagerStandard::NetworkShareClient::GetNearlinkIpShareStatus(OHOS::NetManagerStandard::NearlinkIpShareStatus&)";
       "OHOS::NetManagerStandard::NetworkShareClient::~NetworkShareClient()";
       "OHOS::NetManagerStandard::NetworkShareClient::RegisterSharingEvent(OHOS::sptr<OHOS::NetManagerStandard::ISharingEventCallback>)";
       "OHOS::NetManagerStandard::NetworkShareClient::UnregisterSharingEvent(OHOS::sptr<OHOS::NetManagerStandard::ISharingEventCallback>)";

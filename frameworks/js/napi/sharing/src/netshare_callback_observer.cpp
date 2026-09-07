@@ -21,6 +21,7 @@
 #include "netmanager_ext_log.h"
 #include "net_manager_ext_constants.h"
 #include "netshare_observer_wrapper.h"
+#include "nearlink_ipshare_converter.h"
 
 namespace OHOS {
 namespace NetManagerStandard {
@@ -77,6 +78,16 @@ void NetShareCallbackObserver::OnSharingUpstreamChanged(const sptr<NetHandle> ne
         static_cast<std::string>(EVENT_SHARE_UPSTREAM_CHANGE), netHandle, SharingUpstreamChangedCallback);
 }
 
+void NetShareCallbackObserver::OnNearlinkIpShareStateChanged(const NearlinkIpShareStatus &status)
+{
+    auto manager = DelayedSingleton<NetShareObserverWrapper>::GetInstance()->GetEventManager();
+    if (!manager->HasEventListener(static_cast<std::string>(EVENT_NEARLINK_IPSHARE_STATE_CHANGE))) {
+        return;
+    }
+    manager->EmitByUv(static_cast<std::string>(EVENT_NEARLINK_IPSHARE_STATE_CHANGE),
+        new NearlinkIpShareStatus(status), NearlinkIpShareStateChangedCallback);
+}
+
 napi_value NetShareCallbackObserver::CreateSharingStateChangedParam(napi_env env, void *data)
 {
     if (data == nullptr) {
@@ -108,6 +119,17 @@ napi_value NetShareCallbackObserver::CreateSharingUpstreamChangedParam(napi_env 
     return NapiUtils::GetUndefined(env);
 }
 
+napi_value NetShareCallbackObserver::CreateNearlinkIpShareStateChangedParam(napi_env env, void *data)
+{
+    if (data == nullptr) {
+        return nullptr;
+    }
+    auto shareStatus = static_cast<NearlinkIpShareStatus *>(data);
+    napi_value value = NearlinkIpShareConverter::ToJs(env, *shareStatus);
+    delete shareStatus;
+    return value;
+}
+
 void NetShareCallbackObserver::SharingStateChangedCallback(uv_work_t *work, int status)
 {
     CallbackTemplate<CreateSharingStateChangedParam>(work, status);
@@ -121,6 +143,12 @@ void NetShareCallbackObserver::InterfaceSharingStateChangedCallback(uv_work_t *w
 void NetShareCallbackObserver::SharingUpstreamChangedCallback(uv_work_t *work, int status)
 {
     CallbackTemplate<CreateSharingUpstreamChangedParam>(work, status);
+}
+
+
+void NetShareCallbackObserver::NearlinkIpShareStateChangedCallback(uv_work_t *work, int status)
+{
+    CallbackTemplate<CreateNearlinkIpShareStateChangedParam>(work, status);
 }
 } // namespace NetManagerStandard
 } // namespace OHOS

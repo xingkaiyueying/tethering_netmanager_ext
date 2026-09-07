@@ -24,6 +24,34 @@ import connection from "./@ohos.net.connection";
  */
 declare namespace sharing {
   type NetHandle = connection.NetHandle;
+
+  export type NearlinkIpShareRole = 'NONE' | 'GATEWAY' | 'TERMINAL';
+
+  export type NearlinkIpShareState =
+    'IDLE' | 'STARTING' | 'DISCOVERING' | 'CONFIGURING' | 'IFACE_READY' | 'CHANNEL_READY' |
+    'DHCP' | 'SERVING' | 'SERVING_NO_UPSTREAM' | 'ACTIVE' | 'STOPPING' | 'ERROR';
+
+  export interface NearlinkIpShareStatus {
+    role: NearlinkIpShareRole;
+    state: NearlinkIpShareState;
+    peerAddress: string;
+    ifaceName: string;
+    ipv4Address: string;
+    hasUpstream: boolean;
+    errorStage: string;
+    errorCode: number;
+  }
+
+  /** Promise resolution means that the request was accepted; observe or query status for completion. */
+  function isNearlinkIpShareSupported(peerAddress: string): Promise<boolean>;
+  function startNearlinkGateway(peerAddress: string): Promise<void>;
+  function stopNearlinkGateway(): Promise<void>;
+  function startNearlinkTerminal(gatewayAddress: string): Promise<void>;
+  function stopNearlinkTerminal(): Promise<void>;
+  function getNearlinkIpShareStatus(): Promise<NearlinkIpShareStatus>;
+
+  function on(type: 'nearlinkIpShareStateChange', callback: Callback<NearlinkIpShareStatus>): void;
+  function off(type: 'nearlinkIpShareStateChange', callback?: Callback<NearlinkIpShareStatus>): void;
   /**
    * Checks whether this device allows for network sharing.
    * @permission ohos.permission.CONNECTIVITY_INTERNAL

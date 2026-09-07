@@ -20,6 +20,7 @@
 
 #include "inetwork_share_service.h"
 #include "isharing_event_callback.h"
+#include "nearlink_ipshare_status.h"
 #include "parcel.h"
 #include "singleton.h"
 #include "system_ability_load_callback_stub.h"
@@ -175,6 +176,13 @@ public:
      * @systemapi Hide this for inner system use.
      */
     int32_t SetConfigureForShare(bool enabled);
+
+    int32_t IsNearlinkIpShareSupported(const std::string &peerAddress, bool &supported);
+    int32_t StartNearlinkGateway(const std::string &peerAddress);
+    int32_t StopNearlinkGateway();
+    int32_t StartNearlinkTerminal(const std::string &gatewayAddress);
+    int32_t StopNearlinkTerminal();
+    int32_t GetNearlinkIpShareStatus(NearlinkIpShareStatus &status);
 
 private:
     void RestartNetTetheringManagerSysAbility();

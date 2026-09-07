@@ -47,11 +47,12 @@ napi_value NetShareObserverWrapper::On(napi_env env, napi_callback_info info,
 
     const std::string event = NapiUtils::GetStringFromValueUtf8(env, params[ARG_INDEX_0]);
     NETMANAGER_EXT_LOGI("NetworkShare RegisterSharingEvent event = %{public}s", event.c_str());
+    manager_->AddListener(env, event, params[ARG_INDEX_1], false, asyncCallback);
     auto ret = Register();
     if (ret == NETMANAGER_EXT_SUCCESS) {
         registed_ = true;
-        manager_->AddListener(env, event, params[ARG_INDEX_1], false, asyncCallback);
     } else {
+        manager_->DeleteListener(event, params[ARG_INDEX_1]);
         NETMANAGER_EXT_LOGE("RegisterSharingEvent error = %{public}d", ret);
         NetBaseErrorCodeConvertor convertor;
         std::string errorMsg = convertor.ConvertErrorCode(ret);

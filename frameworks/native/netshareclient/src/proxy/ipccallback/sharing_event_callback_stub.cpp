@@ -53,6 +53,14 @@ int32_t SharingEventCallbackStub::OnRemoteRequest(uint32_t code, MessageParcel &
             OnSharingUpstreamChanged(netHandle);
             break;
         }
+        case TetheringEventInterfaceCode::NEARLINK_IPSHARE_STATE_CHANGED: {
+            std::unique_ptr<NearlinkIpShareStatus> status(data.ReadParcelable<NearlinkIpShareStatus>());
+            if (status == nullptr) {
+                return IPC_PROXY_ERR;
+            }
+            OnNearlinkIpShareStateChanged(*status);
+            break;
+        }
         default:
             return IPCObjectStub::OnRemoteRequest(code, data, reply, option);
     }

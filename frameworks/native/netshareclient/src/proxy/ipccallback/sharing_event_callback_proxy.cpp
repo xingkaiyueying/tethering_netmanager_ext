@@ -117,5 +117,26 @@ void SharingEventCallbackProxy::OnSharingUpstreamChanged(const sptr<NetHandle> n
         NETMGR_EXT_LOG_E("OnSharingUpstreamChanged SendRequest error=[%{public}d].", ret);
     }
 }
+
+void SharingEventCallbackProxy::OnNearlinkIpShareStateChanged(const NearlinkIpShareStatus &status)
+{
+    auto remote = Remote();
+    if (remote == nullptr) {
+        NETMGR_EXT_LOG_E("[NearlinkIpShare][Callback] remote is null");
+        return;
+    }
+    MessageParcel data;
+    MessageParcel reply;
+    MessageOption option;
+    if (!data.WriteInterfaceToken(ISharingEventCallback::GetDescriptor()) || !data.WriteParcelable(&status)) {
+        NETMGR_EXT_LOG_E("[NearlinkIpShare][Callback] status parcel write failed");
+        return;
+    }
+    int32_t ret = remote->SendRequest(
+        static_cast<uint32_t>(TetheringEventInterfaceCode::NEARLINK_IPSHARE_STATE_CHANGED), data, reply, option);
+    if (ret != NETMANAGER_EXT_SUCCESS) {
+        NETMGR_EXT_LOG_E("[NearlinkIpShare][Callback] send failed code=%{public}d", ret);
+    }
+}
 } // namespace NetManagerStandard
 } // namespace OHOS

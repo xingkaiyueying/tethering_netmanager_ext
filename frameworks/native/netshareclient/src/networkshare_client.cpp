@@ -251,6 +251,43 @@ int32_t NetworkShareClient::SetConfigureForShare(bool enabled)
     return proxy->SetConfigureForShare(enabled);
 }
 
+int32_t NetworkShareClient::IsNearlinkIpShareSupported(const std::string &peerAddress, bool &supported)
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL :
+        proxy->IsNearlinkIpShareSupported(peerAddress, supported);
+}
+
+int32_t NetworkShareClient::StartNearlinkGateway(const std::string &peerAddress)
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->StartNearlinkGateway(peerAddress);
+}
+
+int32_t NetworkShareClient::StopNearlinkGateway()
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->StopNearlinkGateway();
+}
+
+int32_t NetworkShareClient::StartNearlinkTerminal(const std::string &gatewayAddress)
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->StartNearlinkTerminal(gatewayAddress);
+}
+
+int32_t NetworkShareClient::StopNearlinkTerminal()
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->StopNearlinkTerminal();
+}
+
+int32_t NetworkShareClient::GetNearlinkIpShareStatus(NearlinkIpShareStatus &status)
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->GetNearlinkIpShareStatus(status);
+}
+
 sptr<INetworkShareService> NetworkShareClient::GetProxy()
 {
     std::lock_guard locker(mutex_);

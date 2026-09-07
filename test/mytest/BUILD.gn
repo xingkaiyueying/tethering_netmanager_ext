@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Huawei Device Co., Ltd.
+# Licensed under the Apache License, Version 2.0 (the "License");
+
+import("//build/ohos.gni")
+
+ohos_executable("sleip_netshare_stage3") {
+  sources = [ "sleip_netshare_stage3.c" ]
+  external_deps = [ "hilog:libhilog" ]
+  subsystem_name = "communication"
+  part_name = "netmanager_ext"
+  install_enable = true
+}

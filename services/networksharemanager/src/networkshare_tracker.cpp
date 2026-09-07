@@ -667,6 +667,28 @@ int32_t NetworkShareTracker::RegisterSharingEvent(sptr<ISharingEventCallback> ca
     return NETMANAGER_EXT_SUCCESS;
 }
 
+bool NetworkShareTracker::SubmitNearlinkTask(const std::function<void()> &task)
+{
+    if (networkShareTrackerFfrtQueue_ == nullptr || !task) {
+        NETMGR_EXT_LOG_E("[NearlinkIpShare][Worker] queue unavailable");
+        return false;
+    }
+    networkShareTrackerFfrtQueue_->submit(task, ffrt::task_attr().name("NearlinkIpShare_task"));
+    return true;
+}
+
+void NetworkShareTracker::SendNearlinkStateChange(const NearlinkIpShareStatus &status)
+{
+    std::lock_guard<ffrt::mutex> lock(callbackMutex_);
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][Event] role=%{public}d state=%{public}d listeners=%{public}zu",
+        static_cast<int32_t>(status.role), static_cast<int32_t>(status.state), sharingEventCallback_.size());
+    for (auto &callback : sharingEventCallback_) {
+        if (callback != nullptr) {
+            callback->OnNearlinkIpShareStateChanged(status);
+        }
+    }
+}
+
 int32_t NetworkShareTracker::UnregisterSharingEvent(sptr<ISharingEventCallback> callback)
 {
     // LCOV_EXCL_START

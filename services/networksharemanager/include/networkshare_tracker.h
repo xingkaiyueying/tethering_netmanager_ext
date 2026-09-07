@@ -19,6 +19,7 @@
 #include <any>
 #include <atomic>
 #include <map>
+#include <functional>
 
 #ifdef BLUETOOTH_MODOULE
 #include "bluetooth_pan.h"
@@ -222,6 +223,9 @@ public:
     void OnPowerDisConnected();
 
     void OnPowerConnected();
+
+    bool SubmitNearlinkTask(const std::function<void()> &task);
+    void SendNearlinkStateChange(const NearlinkIpShareStatus &status);
 
     /**
      * get interface index by name

@@ -34,6 +34,7 @@ public:
     void OnInterfaceSharingStateChanged(const SharingIfaceType &type, const std::string &iface,
                                         const SharingIfaceState &state) override;
     void OnSharingUpstreamChanged(const sptr<NetHandle> netHandle) override;
+    void OnNearlinkIpShareStateChanged(const NearlinkIpShareStatus &status) override;
 
 private:
     template <napi_value (*MakeJsValue)(napi_env, void *)> static void CallbackTemplate(uv_work_t *work, int status)
@@ -60,9 +61,11 @@ private:
     static napi_value CreateSharingStateChangedParam(napi_env env, void *data);
     static napi_value CreateInterfaceSharingStateChangedParam(napi_env env, void *data);
     static napi_value CreateSharingUpstreamChangedParam(napi_env env, void *data);
+    static napi_value CreateNearlinkIpShareStateChangedParam(napi_env env, void *data);
     static void SharingStateChangedCallback(uv_work_t *work, int status);
     static void InterfaceSharingStateChangedCallback(uv_work_t *work, int status);
     static void SharingUpstreamChangedCallback(uv_work_t *work, int status);
+    static void NearlinkIpShareStateChangedCallback(uv_work_t *work, int status);
 };
 } // namespace NetManagerStandard
 } // namespace OHOS

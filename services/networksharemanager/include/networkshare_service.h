@@ -26,6 +26,7 @@
 #include "errorcode_convertor.h"
 #include "network_share_service_stub.h"
 #include "networkshare_tracker.h"
+#include "nearlink_ipshare_status.h"
 #include "ffrt.h"
 
 namespace OHOS {
@@ -136,6 +137,13 @@ public:
      * set sysctl prop
      */
     int32_t SetConfigureForShare(bool enabled) override;
+
+    int32_t IsNearlinkIpShareSupported(const std::string &peerAddress, bool &supported) override;
+    int32_t StartNearlinkGateway(const std::string &peerAddress) override;
+    int32_t StopNearlinkGateway() override;
+    int32_t StartNearlinkTerminal(const std::string &gatewayAddress) override;
+    int32_t StopNearlinkTerminal() override;
+    int32_t GetNearlinkIpShareStatus(NearlinkIpShareStatus &status) override;
 
     int32_t GetBundleNameByUid(const int uid, std::string &bundleName);
 
