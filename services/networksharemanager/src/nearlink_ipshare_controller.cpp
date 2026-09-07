@@ -362,7 +362,7 @@ void NearlinkIpShareController::ConfigureGateway()
     sptr<NetLinkInfo> linkInfo = sptr<NetLinkInfo>::MakeSptr();
     ret = NetConnClient::GetInstance().GetDefaultNet(upstream);
     if (ret != NETMANAGER_SUCCESS || upstream.GetNetId() < 0 || linkInfo == nullptr ||
-        NetConnClient::GetInstance().GetConnectionProperties(upstream, linkInfo) != NETMANAGER_SUCCESS ||
+        NetConnClient::GetInstance().GetConnectionProperties(upstream, *linkInfo) != NETMANAGER_SUCCESS ||
         linkInfo->ifaceName_.empty()) {
         NETMGR_EXT_LOG_I("[NearlinkIpShare][Gateway] no upstream; local DHCP remains available");
         {
