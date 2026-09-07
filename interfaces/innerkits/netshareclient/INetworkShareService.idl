@@ -35,4 +35,4 @@ interface OHOS.NetManagerStandard.INetworkShareService {
     void StartNearlinkTerminal([in] String gatewayAddress);
     void StopNearlinkTerminal();
     void GetNearlinkIpShareStatus([out] NearlinkIpShareStatus status);
-}
+}
