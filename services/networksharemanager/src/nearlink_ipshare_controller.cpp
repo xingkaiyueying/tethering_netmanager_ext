@@ -7,6 +7,7 @@
 
 #include "nearlink_ipshare_controller.h"
 
+#include <cerrno>
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cctype>
@@ -814,9 +815,26 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
         NetsysController::GetInstance().NetworkRemoveInterface(IP_SHARE_LOCAL_NET_ID, IFACE_NAME))) {
         localInterfaceAdded_ = false;
     }
-    if (addressConfigured_ && result("address", NetsysController::GetInstance().DelInterfaceAddress(
-        IFACE_NAME, configuration_.GetNearlinkIpv4Addr(), PREFIX_LENGTH))) {
-        addressConfigured_ = false;
+    if (addressConfigured_) {
+        int32_t ret = NetsysController::GetInstance().DelInterfaceAddress(
+            IFACE_NAME, configuration_.GetNearlinkIpv4Addr(), PREFIX_LENGTH);
+        if (ret != 0) {
+            // The interface can disappear before a cleanup retry. Do not retain
+            // ownership of an address that the kernel no longer has.
+            if (ret == -ENODEV || ret == -EADDRNOTAVAIL) {
+                ret = 0;
+            } else {
+                InterfaceConfigurationParcel config {};
+                config.ifName = IFACE_NAME;
+                if (NetsysController::GetInstance().GetInterfaceConfig(config) == 0 &&
+                    (config.ipv4Addr.empty() || config.ipv4Addr == "0.0.0.0")) {
+                    ret = 0;
+                }
+            }
+        }
+        if (result("address", ret)) {
+            addressConfigured_ = false;
+        }
     }
     // Always close the channel after DHCP stop/failure: this revokes the IPv4
     // gate even when DHCP cleanup fails. Retain failed resource ownership.
