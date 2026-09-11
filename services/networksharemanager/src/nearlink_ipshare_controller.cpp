@@ -39,14 +39,25 @@ constexpr const char *DIRECT_NEXT_HOP = "0.0.0.0";
 
 // The Demo uses one frozen IPv4 subnet. Reject malformed/foreign leases before
 // publishing them to NetConn; DHCP success alone does not validate their shape.
+bool IsMissingDns(const char *value)
+{
+    // DHCP FormatString uses "*" for an absent optional DNS address.
+    return value[0] == '\0' || strcmp(value, "*") == 0;
+}
+
 bool ValidLease(const DhcpResult &result)
 {
     for (const char *value : {result.strOptClientId, result.strOptSubnet,
         result.strOptRouter1, result.strOptDns1, result.strOptDns2}) {
         if (memchr(value, '\0', DHCP_MAX_FILE_BYTES) == nullptr) {
+            NETMGR_EXT_LOG_E("[NearlinkIpShare][Lease] unterminated field");
             return false;
         }
     }
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][Lease] success=%{public}d type=%{public}d seconds=%{public}u "
+        "address=%{public}s mask=%{public}s router=%{public}s dns1=%{public}s dns2=%{public}s",
+        result.isOptSuc, result.iptype, result.uOptLeasetime, result.strOptClientId, result.strOptSubnet,
+        result.strOptRouter1, result.strOptDns1, result.strOptDns2);
     in_addr address {};
     if (!result.isOptSuc || result.iptype != DHCP_IPV4 || result.uOptLeasetime == 0 ||
         inet_pton(AF_INET, result.strOptClientId, &address) != 1 ||
@@ -58,7 +69,7 @@ bool ValidLease(const DhcpResult &result)
         return false;
     }
     for (const char *dns : {result.strOptDns1, result.strOptDns2}) {
-        if (dns[0] != '\0' && (inet_pton(AF_INET, dns, &address) != 1 || address.s_addr == 0)) {
+        if (!IsMissingDns(dns) && (inet_pton(AF_INET, dns, &address) != 1 || address.s_addr == 0)) {
             return false;
         }
     }
@@ -696,7 +707,7 @@ void NearlinkIpShareController::ApplyTerminalNetwork(const DhcpResult &result)
     route.gateway_.address_ = result.strOptRouter1;
     linkInfo->routeList_.push_back(route);
     for (const char *dnsAddress : {result.strOptDns1, result.strOptDns2}) {
-        if (dnsAddress != nullptr && dnsAddress[0] != '\0') {
+        if (!IsMissingDns(dnsAddress)) {
             INetAddr dns;
             dns.type_ = INetAddr::IPV4;
             dns.family_ = AF_INET;
