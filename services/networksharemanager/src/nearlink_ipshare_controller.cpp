@@ -40,6 +40,17 @@ constexpr const char *DIRECT_NEXT_HOP = "0.0.0.0";
 
 // The Demo uses one frozen IPv4 subnet. Reject malformed/foreign leases before
 // publishing them to NetConn; DHCP success alone does not validate their shape.
+// Derive the parcel type from Netsys: internal and open-source trees use
+// different namespaces for InterfaceConfigurationParcel.
+template<typename Config>
+bool IsGatewayAddressAbsent(int32_t (NetsysController::*query)(Config &))
+{
+    Config config {};
+    config.ifName = IFACE_NAME;
+    return (NetsysController::GetInstance().*query)(config) == 0 &&
+        (config.ipv4Addr.empty() || config.ipv4Addr == "0.0.0.0");
+}
+
 bool IsMissingDns(const char *value)
 {
     // DHCP FormatString uses "*" for an absent optional DNS address.
@@ -824,10 +835,7 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
             if (ret == -ENODEV || ret == -EADDRNOTAVAIL) {
                 ret = 0;
             } else {
-                InterfaceConfigurationParcel config {};
-                config.ifName = IFACE_NAME;
-                if (NetsysController::GetInstance().GetInterfaceConfig(config) == 0 &&
-                    (config.ipv4Addr.empty() || config.ipv4Addr == "0.0.0.0")) {
+                if (IsGatewayAddressAbsent(&NetsysController::GetInterfaceConfig)) {
                     ret = 0;
                 }
             }
