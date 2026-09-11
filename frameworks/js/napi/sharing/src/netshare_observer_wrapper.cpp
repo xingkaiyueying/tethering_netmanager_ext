@@ -47,6 +47,9 @@ napi_value NetShareObserverWrapper::On(napi_env env, napi_callback_info info,
     }
 
     const std::string event = NapiUtils::GetStringFromValueUtf8(env, params[ARG_INDEX_0]);
+    if (std::find(events.begin(), events.end(), event) == events.end()) {
+        return NapiUtils::GetUndefined(env);
+    }
     NETMANAGER_EXT_LOGI("NetworkShare RegisterSharingEvent event = %{public}s", event.c_str());
     manager_->AddListener(env, event, params[ARG_INDEX_1], false, asyncCallback);
     bool isNearlink = event == EVENT_NEARLINK_IPSHARE_STATE_CHANGE;

@@ -22,6 +22,7 @@ class NearlinkIpShareStatus;
 
 namespace OHOS::NetManagerStandard {
 class INearlinkIpShareEventCallback;
+class INetConnCallback;
 
 class NearlinkIpShareController final : public std::enable_shared_from_this<NearlinkIpShareController> {
 public:
@@ -40,6 +41,7 @@ public:
     void OnNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
     void OnDhcpSuccess(int32_t status, const std::string &iface, const DhcpResult &result);
     void OnDhcpFailure(int32_t status, const std::string &iface, const std::string &reason);
+    void OnUpstreamChanged();
 
 private:
     NearlinkIpShareController() = default;
@@ -47,9 +49,12 @@ private:
     int32_t Stop(NearlinkIpShareRole expectedRole);
     void HandleNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
     void ConfigureGateway();
-    void StartTerminalDhcp(const std::string &peerAddress);
+    void StartTerminalDhcp();
+    void ConfigureUpstream();
+    int32_t CleanupUpstream();
+    bool IsCurrentSession(uint64_t generation) const;
     void ApplyTerminalNetwork(const DhcpResult &result);
-    void Cleanup(bool publishIdle = true);
+    bool Cleanup(bool publishIdle = true);
     void Fail(const std::string &stage, int32_t code);
     void Publish(NearlinkIpShareState state, const std::string &errorStage = {}, int32_t errorCode = 0);
     static bool ParsePeerAddress(const std::string &address, std::array<uint8_t, 6> &bytes);
@@ -59,6 +64,12 @@ private:
     NearlinkIpShareStatus status_;
     std::shared_ptr<OHOS::Nearlink::NearlinkIpShareObserver> nearlinkObserver_;
     bool initialized_ {false};
+    bool shuttingDown_ {false};
+    bool stopRequested_ {false};
+    uint64_t generation_ {0};
+    bool nearlinkStarted_ {false};
+    bool localInterfaceAdded_ {false};
+    bool localRouteAdded_ {false};
     bool addressConfigured_ {false};
     bool dhcpServerStarted_ {false};
     bool dnsProxyStarted_ {false};
@@ -67,6 +78,8 @@ private:
     bool natEnabled_ {false};
     bool dhcpClientStarted_ {false};
     uint32_t netSupplierId_ {0};
+    sptr<INetConnCallback> upstreamCallback_;
+    int32_t upstreamNetId_ {-1};
     std::string upstreamIface_;
     NetworkShareConfiguration configuration_;
 };

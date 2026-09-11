@@ -34,7 +34,7 @@ void NearlinkIpShareEventCallbackProxy::OnNearlinkIpShareStateChanged(const Near
     }
     MessageParcel data;
     MessageParcel reply;
-    MessageOption option;
+    MessageOption option(MessageOption::TF_ASYNC);
     if (!data.WriteInterfaceToken(INearlinkIpShareEventCallback::GetDescriptor()) || !data.WriteParcelable(&status)) {
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Callback] status parcel write failed");
         return;

@@ -37,6 +37,7 @@ declare namespace sharing {
     peerAddress: string;
     ifaceName: string;
     ipv4Address: string;
+    /** Gateway forwarding is configured; terminal ACTIVE does not certify Internet reachability. */
     hasUpstream: boolean;
     errorStage: string;
     errorCode: number;
