@@ -33,13 +33,16 @@ constexpr const char *SUBNET_MASK = "255.255.255.0";
 constexpr const char *FORWARDING_REQUESTER = "NearlinkIpShare";
 constexpr int32_t PREFIX_LENGTH = 24;
 constexpr int32_t DHCP_IPV4 = 0;
+// Existing DHCP callback status ABI (dhcp_define.h EnumErrCode); no new C ABI.
+constexpr int32_t DHCP_RENEW_FAILED = 4;
+constexpr int32_t DHCP_RENEW_TIMEOUT = 5;
 constexpr int32_t NETWORK_SCORE = 60;
 constexpr int32_t IP_SHARE_LOCAL_NET_ID = 99;
 constexpr const char *LOCAL_SUBNET = "192.168.77.0/24";
 constexpr const char *DIRECT_NEXT_HOP = "0.0.0.0";
 
-// The Demo uses one frozen IPv4 subnet. Reject malformed/foreign leases before
-// publishing them to NetConn; DHCP success alone does not validate their shape.
+// The gateway uses the Demo subnet; terminals accept valid IPv4 DHCP subnets.
+// DHCP success alone does not validate addresses, route or DNS readiness.
 // Derive the parcel type from Netsys: internal and open-source trees use
 // different namespaces for InterfaceConfigurationParcel.
 template<typename Config>
@@ -70,22 +73,53 @@ bool ValidLease(const DhcpResult &result)
         "address=%{public}s mask=%{public}s router=%{public}s dns1=%{public}s dns2=%{public}s",
         result.isOptSuc, result.iptype, result.uOptLeasetime, result.strOptClientId, result.strOptSubnet,
         result.strOptRouter1, result.strOptDns1, result.strOptDns2);
-    in_addr address {};
+    auto read = [](const char *text, uint32_t &host) {
+        in_addr address {};
+        if (inet_pton(AF_INET, text, &address) != 1) return false;
+        host = ntohl(address.s_addr);
+        return true;
+    };
+    auto unicast = [](uint32_t ip) {
+        return (ip >> 24) != 0 && (ip >> 24) != 127 && (ip >> 24) < 224;
+    };
+    uint32_t ip, mask, router;
     if (!result.isOptSuc || result.iptype != DHCP_IPV4 || result.uOptLeasetime == 0 ||
-        inet_pton(AF_INET, result.strOptClientId, &address) != 1 ||
-        strcmp(result.strOptSubnet, SUBNET_MASK) != 0 || strcmp(result.strOptRouter1, "192.168.77.1") != 0) {
-        return false;
-    }
-    uint32_t host = ntohl(address.s_addr);
-    if (host < 0xc0a84d02 || host > 0xc0a84d14) {
-        return false;
-    }
+        !read(result.strOptClientId, ip) || !read(result.strOptSubnet, mask) ||
+        !read(result.strOptRouter1, router) || !unicast(ip) || !unicast(router)) return false;
+    uint32_t hosts = ~mask;
+    if (mask == 0 || hosts < 3 || (hosts & (hosts + 1)) != 0 ||
+        (ip & mask) != (router & mask) || ip == router ||
+        (ip & hosts) == 0 || (ip & hosts) == hosts ||
+        (router & hosts) == 0 || (router & hosts) == hosts) return false;
+    bool haveDns = false;
     for (const char *dns : {result.strOptDns1, result.strOptDns2}) {
-        if (!IsMissingDns(dns) && (inet_pton(AF_INET, dns, &address) != 1 || address.s_addr == 0)) {
-            return false;
-        }
+        if (IsMissingDns(dns)) continue;
+        uint32_t address;
+        if (!read(dns, address) || !unicast(address)) return false;
+        haveDns = true;
     }
-    return true;
+    return haveDns;
+}
+
+int32_t LeasePrefix(const DhcpResult &result)
+{
+    in_addr mask {};
+    inet_pton(AF_INET, result.strOptSubnet, &mask);
+    uint32_t bits = ntohl(mask.s_addr);
+    int32_t prefix = 0;
+    while (bits & 0x80000000u) { ++prefix; bits <<= 1; }
+    return prefix;
+}
+
+std::string LeaseSubnet(const DhcpResult &result)
+{
+    in_addr address {}, mask {};
+    inet_pton(AF_INET, result.strOptClientId, &address);
+    inet_pton(AF_INET, result.strOptSubnet, &mask);
+    address.s_addr &= mask.s_addr;
+    char text[INET_ADDRSTRLEN] {};
+    inet_ntop(AF_INET, &address, text, sizeof(text));
+    return text;
 }
 
 class UpstreamCallback final : public NetConnCallbackStub {
@@ -664,6 +698,11 @@ void NearlinkIpShareController::OnDhcpFailure(int32_t status, const std::string 
     auto self = shared_from_this();
     NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, status, iface, generation = generation_]() {
         if (self->IsCurrentSession(generation) && self->dhcpClientStarted_ && iface == IFACE_NAME) {
+            if ((status == DHCP_RENEW_FAILED || status == DHCP_RENEW_TIMEOUT) &&
+                self->netSupplierId_ != 0 && std::chrono::steady_clock::now() < self->leaseExpiry_) {
+                NETMGR_EXT_LOG_I("[NearlinkIpShare][DHCP] temporary renewal failure; valid lease retained");
+                return;
+            }
             self->Fail("DHCP", status);
         }
     });
@@ -692,15 +731,15 @@ void NearlinkIpShareController::ApplyTerminalNetwork(const DhcpResult &result)
     address.family_ = AF_INET;
     address.address_ = result.strOptClientId;
     address.netMask_ = result.strOptSubnet;
-    address.prefixlen_ = PREFIX_LENGTH;
+    address.prefixlen_ = LeasePrefix(result);
     linkInfo->netAddrList_.push_back(address);
 
     Route direct;
     direct.iface_ = IFACE_NAME;
     direct.destination_.type_ = INetAddr::IPV4;
     direct.destination_.family_ = AF_INET;
-    direct.destination_.address_ = "192.168.77.0";
-    direct.destination_.prefixlen_ = PREFIX_LENGTH;
+    direct.destination_.address_ = LeaseSubnet(result);
+    direct.destination_.prefixlen_ = LeasePrefix(result);
     direct.gateway_.type_ = INetAddr::IPV4;
     direct.gateway_.family_ = AF_INET;
     direct.gateway_.address_ = DIRECT_NEXT_HOP;
@@ -710,6 +749,7 @@ void NearlinkIpShareController::ApplyTerminalNetwork(const DhcpResult &result)
     Route route;
     route.iface_ = IFACE_NAME;
     route.isDefaultRoute_ = true;
+    route.hasGateway_ = true;
     route.destination_.type_ = INetAddr::IPV4;
     route.destination_.family_ = AF_INET;
     route.destination_.address_ = "0.0.0.0";
@@ -755,6 +795,7 @@ void NearlinkIpShareController::ApplyTerminalNetwork(const DhcpResult &result)
     }
     NETMGR_EXT_LOG_I("[NearlinkIpShare][Terminal] DHCP callback applied interface=%{public}s route=2 dns=%{public}zu "
         "validation=requested", IFACE_NAME, linkInfo->dnsList_.size());
+    leaseExpiry_ = std::chrono::steady_clock::now() + std::chrono::seconds(result.uOptLeasetime);
     Publish(NearlinkIpShareState::ACTIVE);
 }
 

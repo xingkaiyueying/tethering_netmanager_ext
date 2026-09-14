@@ -7,6 +7,7 @@
 #define NETMANAGER_EXT_NEARLINK_IPSHARE_CONTROLLER_H
 
 #include <array>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -77,6 +78,7 @@ private:
     bool interfaceForwarding_ {false};
     bool natEnabled_ {false};
     bool dhcpClientStarted_ {false};
+    std::chrono::steady_clock::time_point leaseExpiry_ {};
     uint32_t netSupplierId_ {0};
     sptr<INetConnCallback> upstreamCallback_;
     int32_t upstreamNetId_ {-1};
