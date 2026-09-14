@@ -19,7 +19,9 @@
 #include <string>
 
 #include "inetwork_share_service.h"
+#include "inearlink_ip_share_event_callback.h"
 #include "isharing_event_callback.h"
+#include "nearlink_ip_share_status.h"
 #include "parcel.h"
 #include "singleton.h"
 #include "system_ability_load_callback_stub.h"
@@ -176,6 +178,15 @@ public:
      */
     int32_t SetConfigureForShare(bool enabled);
 
+    int32_t IsNearlinkIpShareSupported(const std::string &peerAddress, bool &supported);
+    int32_t StartNearlinkGateway(const std::string &peerAddress);
+    int32_t StopNearlinkGateway();
+    int32_t StartNearlinkTerminal(const std::string &gatewayAddress);
+    int32_t StopNearlinkTerminal();
+    int32_t GetNearlinkIpShareStatus(NearlinkIpShareStatus &status);
+    int32_t RegisterNearlinkIpShareEvent(sptr<INearlinkIpShareEventCallback> callback);
+    int32_t UnregisterNearlinkIpShareEvent(sptr<INearlinkIpShareEventCallback> callback);
+
 private:
     void RestartNetTetheringManagerSysAbility();
 
@@ -203,6 +214,7 @@ private:
     sptr<INetworkShareService> networkShareService_;
     sptr<IRemoteObject::DeathRecipient> deathRecipient_;
     sptr<ISharingEventCallback> callback_;
+    sptr<INearlinkIpShareEventCallback> nearlinkCallback_;
     std::atomic<bool> isDestroyed_{false};
 };
 } // namespace NetManagerStandard

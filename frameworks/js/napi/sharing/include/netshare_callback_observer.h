@@ -24,6 +24,7 @@
 #include "event_manager.h"
 #include "napi_utils.h"
 #include "net_handle.h"
+#include "nearlink_ip_share_event_callback_stub.h"
 #include "sharing_event_callback_stub.h"
 
 namespace OHOS {
@@ -63,6 +64,15 @@ private:
     static void SharingStateChangedCallback(uv_work_t *work, int status);
     static void InterfaceSharingStateChangedCallback(uv_work_t *work, int status);
     static void SharingUpstreamChangedCallback(uv_work_t *work, int status);
+};
+
+class NearlinkIpShareCallbackObserver : public NearlinkIpShareEventCallbackStub {
+public:
+    void OnNearlinkIpShareStateChanged(const NearlinkIpShareStatus &status) override;
+
+private:
+    static napi_value CreateNearlinkIpShareStateChangedParam(napi_env env, void *data);
+    static void NearlinkIpShareStateChangedCallback(uv_work_t *work, int status);
 };
 } // namespace NetManagerStandard
 } // namespace OHOS

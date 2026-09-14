@@ -39,6 +39,10 @@ constexpr const char *CONFIG_KEY_ROUTE_SUFFIX = "route_suffix";
 constexpr const char *CONFIG_KEY_DHCP_ENDIP = "dhcp_endip";
 constexpr const char *CONFIG_KEY_DEFAULT_MASK = "default_mask";
 constexpr const char *CONFIG_KEY_WIFI_SET_DHCP = "wifi_hotspot_set_dhcp";
+constexpr const char *CONFIG_KEY_NEARLINK_REGEXS = "nearlink_regexs";
+constexpr const char *CONFIG_KEY_NEARLINK_ADDR = "nearlink_ipv4_addr";
+constexpr const char *CONFIG_KEY_NEARLINK_DHCP_START = "nearlink_dhcp_start";
+constexpr const char *CONFIG_KEY_NEARLINK_DHCP_END = "nearlink_dhcp_end";
 constexpr const char *SPLIT_SYMBOL_1 = ":";
 constexpr const char *SPLIT_SYMBOL_2 = ",";
 constexpr const char *VALUE_SUPPORT_TRUE = "true";
@@ -61,6 +65,10 @@ NetworkShareConfiguration::NetworkShareConfiguration()
     configMap_[CONFIG_KEY_DHCP_ENDIP] = Config_Value::CONFIG_VALUE_DHCP_ENDIP;
     configMap_[CONFIG_KEY_DEFAULT_MASK] = Config_Value::CONFIG_VALUE_DEFAULT_MASK;
     configMap_[CONFIG_KEY_WIFI_SET_DHCP] = Config_Value::CONFIG_VALUE_WIFI_SET_DHCP;
+    configMap_[CONFIG_KEY_NEARLINK_REGEXS] = Config_Value::CONFIG_VALUE_NEARLINK_REGEXS;
+    configMap_[CONFIG_KEY_NEARLINK_ADDR] = Config_Value::CONFIG_VALUE_NEARLINK_ADDR;
+    configMap_[CONFIG_KEY_NEARLINK_DHCP_START] = Config_Value::CONFIG_VALUE_NEARLINK_DHCP_START;
+    configMap_[CONFIG_KEY_NEARLINK_DHCP_END] = Config_Value::CONFIG_VALUE_NEARLINK_DHCP_END;
     LoadConfigData();
 }
 
@@ -84,6 +92,11 @@ bool NetworkShareConfiguration::IsBluetoothIface(const std::string &iface)
     return MatchesDownstreamRegexs(iface, blueToothRegexs_);
 }
 
+bool NetworkShareConfiguration::IsNearlinkIface(const std::string &iface)
+{
+    return MatchesDownstreamRegexs(iface, nearlinkRegexs_);
+}
+
 const std::vector<std::string> &NetworkShareConfiguration::GetUsbIfaceRegexs()
 {
     return usbRegexs_;
@@ -97,6 +110,11 @@ const std::vector<std::string> &NetworkShareConfiguration::GetWifiIfaceRegexs()
 const std::vector<std::string> &NetworkShareConfiguration::GetBluetoothIfaceRegexs()
 {
     return blueToothRegexs_;
+}
+
+const std::vector<std::string> &NetworkShareConfiguration::GetNearlinkIfaceRegexs()
+{
+    return nearlinkRegexs_;
 }
 
 std::string &NetworkShareConfiguration::GetBtpanIpv4Addr()
@@ -147,6 +165,21 @@ std::string &NetworkShareConfiguration::GetDefaultMask()
 std::string &NetworkShareConfiguration::GetDhcpEndIP()
 {
     return dhcpEndIP_;
+}
+
+std::string &NetworkShareConfiguration::GetNearlinkIpv4Addr()
+{
+    return nearlinkIpv4Str_;
+}
+
+std::string &NetworkShareConfiguration::GetNearlinkDhcpStart()
+{
+    return nearlinkDhcpStart_;
+}
+
+std::string &NetworkShareConfiguration::GetNearlinkDhcpEnd()
+{
+    return nearlinkDhcpEnd_;
 }
 
 bool NetworkShareConfiguration::GetWifiHotspotSetDhcpFlag() const
@@ -221,6 +254,12 @@ void NetworkShareConfiguration::ParseConfigData(Config_Value cfgValue, std::stri
         dhcpEndIP_ = strVal;
     } else if (cfgValue == Config_Value::CONFIG_VALUE_DEFAULT_MASK) {
         defaultMask_ = strVal;
+    } else if (cfgValue == Config_Value::CONFIG_VALUE_NEARLINK_ADDR) {
+        nearlinkIpv4Str_ = strVal;
+    } else if (cfgValue == Config_Value::CONFIG_VALUE_NEARLINK_DHCP_START) {
+        nearlinkDhcpStart_ = strVal;
+    } else if (cfgValue == Config_Value::CONFIG_VALUE_NEARLINK_DHCP_END) {
+        nearlinkDhcpEnd_ = strVal;
     } else {
         NETMGR_EXT_LOG_E("strKey:%{public}s is unknown data.", strKey.c_str());
     }
@@ -248,6 +287,9 @@ void NetworkShareConfiguration::ParseLineData(std::string &strKey, std::string &
                 isWifiHotspotSetDhcp_ = true;
             }
             break;
+        case Config_Value::CONFIG_VALUE_NEARLINK_REGEXS:
+            ParseRegexsData(nearlinkRegexs_, strVal);
+            break;
         default:
             ParseConfigData(configMap_[strKey], strKey, strVal);
             break;
@@ -261,6 +303,7 @@ int32_t NetworkShareConfiguration::LoadConfigData()
     usbRegexs_.clear();
     wifiRegexs_.clear();
     blueToothRegexs_.clear();
+    nearlinkRegexs_.clear();
 
     std::vector<std::string> strVec = ReadConfigFile();
     if (strVec.size() == 0) {

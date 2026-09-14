@@ -39,6 +39,9 @@ ohos_shared_library("sharing") {
   branch_protector_ret = "pac_ret"
 
   sources = [
+    "src/nearlink_ipshare_async_work.cpp",
+    "src/nearlink_ipshare_context.cpp",
+    "src/nearlink_ipshare_converter.cpp",
     "src/netshare_async_work.cpp",
     "src/netshare_callback_observer.cpp",
     "src/netshare_exec.cpp",

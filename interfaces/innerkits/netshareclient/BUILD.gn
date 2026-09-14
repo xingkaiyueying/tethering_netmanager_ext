@@ -122,6 +122,7 @@ ohos_shared_library("net_tether_manager_if") {
 
   sources = [
     "$NETWORKSHAREMANAGER_INNERKITS_SOURCE_DIR/src/networkshare_client.cpp",
+    "$NETWORKSHAREMANAGER_INNERKITS_SOURCE_DIR/src/proxy/ipccallback/nearlink_ip_share_event_callback_stub.cpp",
     "$NETWORKSHAREMANAGER_INNERKITS_SOURCE_DIR/src/proxy/ipccallback/sharing_event_callback_stub.cpp",
   ]
 

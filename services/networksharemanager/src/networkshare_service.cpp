@@ -21,6 +21,7 @@
 #include "netmanager_base_permission.h"
 #include "netmgr_ext_log_wrapper.h"
 #include "networkshare_notification.h"
+#include "nearlink_ipshare_controller.h"
 #include "networkshare_constants.h"
 #include "networkshare_upstreammonitor.h"
 #include "xcollie/xcollie.h"
@@ -72,6 +73,7 @@ void NetworkShareService::OnStart()
 void NetworkShareService::OnStop()
 {
     EdmParameterUtils::GetInstance().UnRegisterEdmParameterChangeEvent(NETWORK_SHARE_POLICY_PARAM);
+    NearlinkIpShareController::GetInstance()->Uninit();
     NetworkShareTracker::GetInstance().Uninit();
     state_ = STATE_STOPPED;
     registerToService_ = false;
@@ -291,6 +293,98 @@ int32_t NetworkShareService::RegisterSharingEvent(const sptr<ISharingEventCallba
     return ret;
 }
 
+namespace {
+int32_t CheckNearlinkIpSharePermission()
+{
+    if (!NetManagerPermission::IsSystemCaller()) {
+        return NETMANAGER_EXT_ERR_NOT_SYSTEM_CALL;
+    }
+    return NetManagerPermission::CheckPermission(Permission::CONNECTIVITY_INTERNAL) ?
+        NETMANAGER_EXT_SUCCESS : NETMANAGER_EXT_ERR_PERMISSION_DENIED;
+}
+}
+
+int32_t NetworkShareService::IsNearlinkIpShareSupported(const std::string &peerAddress, bool &supported)
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
+    return NearlinkIpShareController::GetInstance()->IsSupported(peerAddress, supported);
+}
+
+int32_t NetworkShareService::StartNearlinkGateway(const std::string &peerAddress)
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
+    return NearlinkIpShareController::GetInstance()->StartGateway(peerAddress);
+}
+
+int32_t NetworkShareService::StopNearlinkGateway()
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
+    return NearlinkIpShareController::GetInstance()->StopGateway();
+}
+
+int32_t NetworkShareService::StartNearlinkTerminal(const std::string &gatewayAddress)
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
+    return NearlinkIpShareController::GetInstance()->StartTerminal(gatewayAddress);
+}
+
+int32_t NetworkShareService::StopNearlinkTerminal()
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
+    return NearlinkIpShareController::GetInstance()->StopTerminal();
+}
+
+int32_t NetworkShareService::GetNearlinkIpShareStatus(NearlinkIpShareStatus &status)
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
+    return NearlinkIpShareController::GetInstance()->GetStatus(status);
+}
+
+int32_t NetworkShareService::RegisterNearlinkIpShareEvent(
+    const sptr<INearlinkIpShareEventCallback> &callback)
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
+    if (!NearlinkIpShareController::GetInstance()->Init()) {
+        return NETMANAGER_EXT_ERR_OPERATION_FAILED;
+    }
+    int32_t ret = NetworkShareTracker::GetInstance().RegisterNearlinkIpShareEvent(callback);
+    if (ret == NETMANAGER_EXT_SUCCESS) {
+        NearlinkIpShareController::GetInstance()->ReplayStatus(callback);
+    }
+    return ret;
+}
+
+int32_t NetworkShareService::UnregisterNearlinkIpShareEvent(
+    const sptr<INearlinkIpShareEventCallback> &callback)
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
+    return NetworkShareTracker::GetInstance().UnregisterNearlinkIpShareEvent(callback);
+}
+
 int32_t NetworkShareService::UnregisterSharingEvent(const sptr<ISharingEventCallback>& callback)
 {
     NETMGR_EXT_LOG_I("NetworkSharing UnRegister Sharing Event.");
@@ -427,7 +521,9 @@ void NetworkShareService::OnAddSystemAbility(int32_t systemAbilityId, const std:
         }
     }
     if (systemAbilityId == COMM_NET_CONN_MANAGER_SYS_ABILITY_ID) {
-        NetworkShareTracker::GetInstance().Init();
+        if (NetworkShareTracker::GetInstance().Init()) {
+            NearlinkIpShareController::GetInstance()->Init();
+        }
     }
 #ifdef WIFI_MODOULE
     if (systemAbilityId == WIFI_HOTSPOT_SYS_ABILITY_ID) {

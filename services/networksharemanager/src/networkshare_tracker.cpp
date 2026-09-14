@@ -667,6 +667,69 @@ int32_t NetworkShareTracker::RegisterSharingEvent(sptr<ISharingEventCallback> ca
     return NETMANAGER_EXT_SUCCESS;
 }
 
+bool NetworkShareTracker::SubmitNearlinkTask(const std::function<void()> &task)
+{
+    if (networkShareTrackerFfrtQueue_ == nullptr || !task) {
+        NETMGR_EXT_LOG_E("[NearlinkIpShare][Worker] queue unavailable");
+        return false;
+    }
+    networkShareTrackerFfrtQueue_->submit(task, ffrt::task_attr().name("NearlinkIpShare_task"));
+    return true;
+}
+
+void NetworkShareTracker::SendNearlinkStateChange(const NearlinkIpShareStatus &status)
+{
+    std::vector<sptr<INearlinkIpShareEventCallback>> callbacks;
+    {
+        std::lock_guard<ffrt::mutex> lock(callbackMutex_);
+        callbacks = nearlinkIpShareEventCallbacks_;
+    }
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][Event] role=%{public}d state=%{public}d listeners=%{public}zu",
+        static_cast<int32_t>(status.role), static_cast<int32_t>(status.state), callbacks.size());
+    for (auto &callback : callbacks) {
+        if (callback != nullptr) {
+            callback->OnNearlinkIpShareStateChanged(status);
+        }
+    }
+}
+
+int32_t NetworkShareTracker::RegisterNearlinkIpShareEvent(sptr<INearlinkIpShareEventCallback> callback)
+{
+    if (callback == nullptr) {
+        return NETMANAGER_EXT_ERR_LOCAL_PTR_NULL;
+    }
+    std::lock_guard<ffrt::mutex> lock(callbackMutex_);
+    if (nearlinkIpShareEventCallbacks_.size() >= MAX_CALLBACK_COUNT) {
+        return NETWORKSHARE_ERROR_ISSHARING_CALLBACK_ERROR;
+    }
+    for (const auto &registered : nearlinkIpShareEventCallbacks_) {
+        if (registered != nullptr && callback->AsObject().GetRefPtr() == registered->AsObject().GetRefPtr()) {
+            return NETMANAGER_EXT_SUCCESS;
+        }
+    }
+    nearlinkIpShareEventCallbacks_.push_back(callback);
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][Event] registered listeners=%{public}zu",
+        nearlinkIpShareEventCallbacks_.size());
+    return NETMANAGER_EXT_SUCCESS;
+}
+
+int32_t NetworkShareTracker::UnregisterNearlinkIpShareEvent(sptr<INearlinkIpShareEventCallback> callback)
+{
+    if (callback == nullptr) {
+        return NETMANAGER_EXT_ERR_LOCAL_PTR_NULL;
+    }
+    std::lock_guard<ffrt::mutex> lock(callbackMutex_);
+    for (auto iter = nearlinkIpShareEventCallbacks_.begin(); iter != nearlinkIpShareEventCallbacks_.end(); ++iter) {
+        if (*iter != nullptr && callback->AsObject().GetRefPtr() == (*iter)->AsObject().GetRefPtr()) {
+            nearlinkIpShareEventCallbacks_.erase(iter);
+            break;
+        }
+    }
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][Event] unregistered listeners=%{public}zu",
+        nearlinkIpShareEventCallbacks_.size());
+    return NETMANAGER_EXT_SUCCESS;
+}
+
 int32_t NetworkShareTracker::UnregisterSharingEvent(sptr<ISharingEventCallback> callback)
 {
     // LCOV_EXCL_START
