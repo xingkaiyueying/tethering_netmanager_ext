@@ -190,18 +190,20 @@ bool NearlinkIpShareController::Init()
     if (shuttingDown_) {
         return false;
     }
-    if (initialized_) {
-        return true;
+    if (nearlinkObserver_ == nullptr) {
+        nearlinkObserver_ =
+            std::make_shared<NearlinkObserver>(std::weak_ptr<NearlinkIpShareController>(shared_from_this()));
     }
-    nearlinkObserver_ = std::make_shared<NearlinkObserver>(std::weak_ptr<NearlinkIpShareController>(shared_from_this()));
+    // The NearLink profile service is recreated when the adapter is toggled.
+    // Its observer slot is process-local, while this controller remains alive,
+    // so refresh the registration on every idempotent initialization.
     int32_t ret = OHOS::Nearlink::NearlinkIpShareClient::GetInstance().RegisterObserver(nearlinkObserver_);
     if (ret != 0) {
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Init] observer registration failed code=%{public}d", ret);
-        nearlinkObserver_.reset();
         return false;
     }
     initialized_ = true;
-    NETMGR_EXT_LOG_I("[NearlinkIpShare][Init] controller ready");
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][Init] controller ready; observer registration refreshed");
     return true;
 }
 
