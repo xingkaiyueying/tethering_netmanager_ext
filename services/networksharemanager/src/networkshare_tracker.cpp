@@ -15,6 +15,8 @@
 
 #include "networkshare_tracker.h"
 
+#include "networkshare_admission.h"
+
 #include <cinttypes>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -448,6 +450,10 @@ void NetworkShareTracker::HandleSubSmUpdateInterfaceState(const std::shared_ptr<
             return;
     }
     SendMainSMEvent(who, which, state);
+    // MainSM processes resource teardown synchronously. Release only after that work.
+    if (state == SUB_SM_STATE_AVAILABLE || state == SUB_SM_STATE_UNAVAILABLE) {
+        NetworkShareAdmission::GetInstance().ReleaseLegacy("iface:" + who->GetInterfaceName());
+    }
 }
 
 void NetworkShareTracker::SendMainSMEvent(const std::shared_ptr<NetworkShareSubStateMachine> &subSM, int32_t event,
@@ -502,6 +508,9 @@ int32_t NetworkShareTracker::StartNetworkSharing(const SharingIfaceType &type)
 {
     if (static_cast<uint32_t>(type) > static_cast<uint32_t>(SharingIfaceType::SHARING_BLUETOOTH)) {
         return NETWORKSHARE_ERROR_UNKNOWN_TYPE;
+    }
+    if (!NetworkShareAdmission::GetInstance().AcquireLegacy("request:" + std::to_string(static_cast<int32_t>(type)))) {
+        return NETMANAGER_EXT_ERR_OPERATION_FAILED;
     }
     NETMGR_EXT_LOG_I("NetworkShare start sharing,clientRequestsBitMask_ = %{public}u.",
                      clientRequestsBitMask_.load(std::memory_order_relaxed));
@@ -793,6 +802,10 @@ int32_t NetworkShareTracker::GetSharedSubSMTraffic(const TrafficType &type, int3
 
 int32_t NetworkShareTracker::EnableNetSharingInternal(const SharingIfaceType &type, bool enable)
 {
+    const std::string owner = "request:" + std::to_string(static_cast<int32_t>(type));
+    if (enable && !NetworkShareAdmission::GetInstance().AcquireLegacy(owner)) {
+        return NETMANAGER_EXT_ERR_OPERATION_FAILED;
+    }
     NETMGR_EXT_LOG_I("NetSharing type[%{public}d] enable[%{public}d].", type, enable);
     int32_t result = NETMANAGER_EXT_SUCCESS;
     switch (type) {
@@ -808,6 +821,11 @@ int32_t NetworkShareTracker::EnableNetSharingInternal(const SharingIfaceType &ty
         default:
             NETMGR_EXT_LOG_E("Invalid networkshare type.");
             return NETWORKSHARE_ERROR_UNKNOWN_TYPE;
+    }
+    if ((enable && result != NETMANAGER_EXT_SUCCESS) ||
+        (!enable && result == NETMANAGER_EXT_SUCCESS &&
+        (clientRequestsBitMask_.load(std::memory_order_relaxed) & (1U << static_cast<uint32_t>(type))) == 0)) {
+        NetworkShareAdmission::GetInstance().ReleaseLegacy(owner);
     }
     NETMGR_EXT_LOG_I("NetSharing EnableNetSharingInternal result is %{public}d.", result);
     if (result != NETMANAGER_EXT_SUCCESS) {
@@ -953,6 +971,9 @@ int32_t NetworkShareTracker::Sharing(const std::string &iface, int32_t reqState)
         subSM = iter->second->subStateMachine_;
     }
     if (subSM != nullptr) {
+        if (!NetworkShareAdmission::GetInstance().AcquireLegacy("iface:" + iface)) {
+            return NETMANAGER_EXT_ERR_OPERATION_FAILED;
+        }
         NETMGR_EXT_LOG_I("NOTIFY TO SUB SM [%{public}s] CMD_NETSHARE_REQUESTED.",
                          subSM->GetInterfaceName().c_str());
         subSM->SubSmEventHandle(CMD_NETSHARE_REQUESTED, reqState);
@@ -1079,7 +1100,9 @@ void NetworkShareTracker::SetDnsForwarders(const NetHandle &netHandle)
     }
     int32_t ret = NETMANAGER_SUCCESS;
     if (!isStartDnsProxy_) {
-        ret = NetsysController::GetInstance().StartDnsProxyListen();
+        ret = NetworkShareAdmission::GetInstance().LegacyResource("resource:dns", true, [&]() {
+            return NetsysController::GetInstance().StartDnsProxyListen();
+        });
         if (ret != NETSYS_SUCCESS) {
             NETMGR_EXT_LOG_E("StartDnsProxy error, result[%{public}d].", ret);
             mainStateMachine_->SwitcheToErrorState(CMD_SET_DNS_FORWARDERS_ERROR);
@@ -1094,7 +1117,9 @@ void NetworkShareTracker::SetDnsForwarders(const NetHandle &netHandle)
         mainStateMachine_->SwitcheToErrorState(CMD_SET_DNS_FORWARDERS_ERROR);
         return;
     }
-    ret = NetsysController::GetInstance().ShareDnsSet(netId);
+    ret = NetworkShareAdmission::GetInstance().LegacyResource("resource:dns", true, [&]() {
+        return NetsysController::GetInstance().ShareDnsSet(netId);
+    });
     if (ret != NETSYS_SUCCESS) {
         NETMGR_EXT_LOG_E("SetDns error, result[%{public}d].", ret);
         mainStateMachine_->SwitcheToErrorState(CMD_SET_DNS_FORWARDERS_ERROR);
@@ -1107,8 +1132,10 @@ void NetworkShareTracker::SetDnsForwarders(const NetHandle &netHandle)
 
 void NetworkShareTracker::StopDnsProxy()
 {
-    if (isStartDnsProxy_) {
-        int32_t ret = NetsysController::GetInstance().StopDnsProxyListen();
+    if (isStartDnsProxy_ || NetworkShareAdmission::GetInstance().HasLegacy("resource:dns")) {
+        int32_t ret = NetworkShareAdmission::GetInstance().LegacyResource("resource:dns", false, [&]() {
+            return NetsysController::GetInstance().StopDnsProxyListen();
+        });
         if (ret != NETSYS_SUCCESS) {
             NETMGR_EXT_LOG_E("StopDnsProxy error, result[%{public}d].", ret);
         } else {
@@ -1492,7 +1519,9 @@ void NetworkShareTracker::HandleClatInterfaceAdded(const std::string &clatIface)
             subSM->GetInterfaceName().c_str(), downIface.c_str(), upIface.c_str());
 
         // First do removal operations
-        NetsysController::GetInstance().DisableNat(downIface, clatIface);
+        NetworkShareAdmission::GetInstance().LegacyResource("resource:nat", false, [&]() {
+            return NetsysController::GetInstance().DisableNat(downIface, clatIface);
+        });
         NetsysController::GetInstance().IpfwdRemoveInterfaceForward(downIface, clatIface);
 
         // Then do addition operations
@@ -1500,7 +1529,9 @@ void NetworkShareTracker::HandleClatInterfaceAdded(const std::string &clatIface)
         if (ret != NETMANAGER_EXT_SUCCESS) {
             NETMGR_EXT_LOG_E("HandleClatInterfaceAdded IpfwdAddInterfaceForward failed, ret[%{public}d]", ret);
         }
-        ret = NetsysController::GetInstance().EnableNat(downIface, clatIface);
+        ret = NetworkShareAdmission::GetInstance().LegacyResource("resource:nat", true, [&]() {
+            return NetsysController::GetInstance().EnableNat(downIface, clatIface);
+        });
         if (ret != NETMANAGER_EXT_SUCCESS) {
             NETMGR_EXT_LOG_E("HandleClatInterfaceAdded EnableNat failed, ret[%{public}d]", ret);
         }
@@ -1545,7 +1576,9 @@ void NetworkShareTracker::HandleClatInterfaceRemoved(const std::string &clatIfac
         }
 
         // Call DisableNat and IpfwdRemoveInterfaceForward
-        int32_t ret = NetsysController::GetInstance().DisableNat(downIface, clatIface);
+        int32_t ret = NetworkShareAdmission::GetInstance().LegacyResource("resource:nat", false, [&]() {
+            return NetsysController::GetInstance().DisableNat(downIface, clatIface);
+        });
         if (ret != NETMANAGER_EXT_SUCCESS) {
             NETMGR_EXT_LOG_E("HandleClatInterfaceRemoved DisableNat failed, ret[%{public}d]", ret);
         }
@@ -1569,7 +1602,9 @@ void NetworkShareTracker::RestartResume()
     if (isStartDnsProxy_) {
         StopDnsProxy();
 
-        ret = NetsysController::GetInstance().StartDnsProxyListen();
+        ret = NetworkShareAdmission::GetInstance().LegacyResource("resource:dns", true, [&]() {
+            return NetsysController::GetInstance().StartDnsProxyListen();
+        });
         if (ret != NETSYS_SUCCESS) {
             NETMGR_EXT_LOG_E("StartDnsProxy error, result[%{public}d].", ret);
             if (mainStateMachine_ == nullptr) {
@@ -1582,7 +1617,9 @@ void NetworkShareTracker::RestartResume()
         NETMGR_EXT_LOG_I("StartDnsProxy successful.");
     }
 
-    ret = NetsysController::GetInstance().ShareDnsSet(netId_);
+    ret = NetworkShareAdmission::GetInstance().LegacyResource("resource:dns", true, [&]() {
+        return NetsysController::GetInstance().ShareDnsSet(netId_);
+    });
     if (ret != NETSYS_SUCCESS) {
         NETMGR_EXT_LOG_E("SetDns error, result[%{public}d].", ret);
         if (mainStateMachine_ == nullptr) {

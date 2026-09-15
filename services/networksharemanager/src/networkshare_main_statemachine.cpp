@@ -15,6 +15,8 @@
 
 #include "networkshare_main_statemachine.h"
 
+#include "networkshare_admission.h"
+
 #include "netmgr_ext_log_wrapper.h"
 #include "netsys_controller.h"
 #include "networkshare_constants.h"
@@ -277,7 +279,9 @@ void NetworkShareMainStateMachine::ChooseUpstreamNetwork()
     if (networkMonitor_ != nullptr && networkMonitor_->GetCurrentGoodUpstream(netInfoPtr)) {
         upstreamIfaceName_ = netInfoPtr->netLinkPro_->ifaceName_;
         std::string tunv4UpstreamIfaceName = "tunv4-" + upstreamIfaceName_;
-        int32_t result = NetsysController::GetInstance().EnableNat(FAKE_DOWNSTREAM_IFACENAME, upstreamIfaceName_);
+        int32_t result = NetworkShareAdmission::GetInstance().LegacyResource("resource:nat", true, [&]() {
+            return NetsysController::GetInstance().EnableNat(FAKE_DOWNSTREAM_IFACENAME, upstreamIfaceName_);
+        });
         if (result != NETSYS_SUCCESS) {
             NetworkShareHisysEvent::GetInstance().SendFaultEvent(
                 NetworkShareEventOperator::OPERATION_CONFIG_FORWARD, NetworkShareEventErrorType::ERROR_CONFIG_FORWARD,
@@ -287,8 +291,10 @@ void NetworkShareMainStateMachine::ChooseUpstreamNetwork()
         }
         uint32_t tunv4IfIndex = NetworkShareTracker::GetInstance().GetInterfaceIndexByName(tunv4UpstreamIfaceName);
         if (tunv4IfIndex != 0) {
-            int32_t result = NetsysController::GetInstance().EnableNat(FAKE_DOWNSTREAM_IFACENAME,
-                tunv4UpstreamIfaceName);
+            int32_t result = NetworkShareAdmission::GetInstance().LegacyResource("resource:nat", true, [&]() {
+                return NetsysController::GetInstance().EnableNat(FAKE_DOWNSTREAM_IFACENAME,
+                    tunv4UpstreamIfaceName);
+            });
             if (result != NETSYS_SUCCESS) {
                 NETMGR_EXT_LOG_E("Main StateMachine enable NAT tunv4 newIface[%{public}s] error[%{public}d].",
                                  tunv4UpstreamIfaceName.c_str(), result);
@@ -396,9 +402,13 @@ bool NetworkShareMainStateMachine::TurnOffMainShareSettings()
 void NetworkShareMainStateMachine::DisableForward()
 {
     NetworkShareTracker::GetInstance().SetUpstreamNetHandle(nullptr);
-    int32_t result = NetsysController::GetInstance().DisableNat(FAKE_DOWNSTREAM_IFACENAME, upstreamIfaceName_);
+    int32_t result = NetworkShareAdmission::GetInstance().LegacyResource("resource:nat", false, [&]() {
+        return NetsysController::GetInstance().DisableNat(FAKE_DOWNSTREAM_IFACENAME, upstreamIfaceName_);
+    });
     std::string tunv4UpstreamIfaceName = "tunv4-" + upstreamIfaceName_;
-    NetsysController::GetInstance().DisableNat(FAKE_DOWNSTREAM_IFACENAME, tunv4UpstreamIfaceName);
+    NetworkShareAdmission::GetInstance().LegacyResource("resource:nat", false, [&]() {
+        return NetsysController::GetInstance().DisableNat(FAKE_DOWNSTREAM_IFACENAME, tunv4UpstreamIfaceName);
+    });
     if (result != NETSYS_SUCCESS) {
         NetworkShareHisysEvent::GetInstance().SendFaultEvent(
             NetworkShareEventOperator::OPERATION_CONFIG_FORWARD, NetworkShareEventErrorType::ERROR_CONFIG_FORWARD,

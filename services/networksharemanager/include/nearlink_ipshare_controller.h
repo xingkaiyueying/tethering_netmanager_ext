@@ -77,6 +77,7 @@ private:
     bool shuttingDown_ {false};
     bool stopRequested_ {false};
     uint64_t generation_ {0};
+    bool gatewayReserved_ {false};
     bool nearlinkStarted_ {false};
     bool localInterfaceAdded_ {false};
     bool localRouteAdded_ {false};
