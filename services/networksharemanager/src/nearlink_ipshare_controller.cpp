@@ -2,6 +2,15 @@
  * Copyright (c) 2026 Huawei Device Co., Ltd.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 #include "nearlink_ipshare_client.h"
 
@@ -24,6 +33,7 @@
 #include "netmgr_ext_log_wrapper.h"
 #include "netsys_controller.h"
 #include "networkshare_tracker.h"
+#include "networkshare_admission.h"
 #include "securec.h"
 
 namespace OHOS::NetManagerStandard {
@@ -33,22 +43,24 @@ constexpr const char *SUBNET_MASK = "255.255.255.0";
 constexpr const char *FORWARDING_REQUESTER = "NearlinkIpShare";
 constexpr int32_t PREFIX_LENGTH = 24;
 constexpr int32_t DHCP_IPV4 = 0;
+// Existing DHCP callback status ABI (dhcp_define.h EnumErrCode); no new C ABI.
+constexpr int32_t DHCP_RENEW_FAILED = 4;
+constexpr int32_t DHCP_RENEW_TIMEOUT = 5;
 constexpr int32_t NETWORK_SCORE = 60;
 constexpr int32_t IP_SHARE_LOCAL_NET_ID = 99;
 constexpr const char *LOCAL_SUBNET = "192.168.77.0/24";
 constexpr const char *DIRECT_NEXT_HOP = "0.0.0.0";
 
-// The Demo uses one frozen IPv4 subnet. Reject malformed/foreign leases before
-// publishing them to NetConn; DHCP success alone does not validate their shape.
+// The gateway uses the Demo subnet; terminals accept valid IPv4 DHCP subnets.
+// DHCP success alone does not validate addresses, route or DNS readiness.
 // Derive the parcel type from Netsys: internal and open-source trees use
 // different namespaces for InterfaceConfigurationParcel.
-template<typename Config>
-bool IsGatewayAddressAbsent(int32_t (NetsysController::*query)(Config &))
+template <typename Config> bool IsGatewayAddressAbsent(int32_t (NetsysController::*query)(Config &))
 {
-    Config config {};
+    Config config{};
     config.ifName = IFACE_NAME;
     return (NetsysController::GetInstance().*query)(config) == 0 &&
-        (config.ipv4Addr.empty() || config.ipv4Addr == "0.0.0.0");
+           (config.ipv4Addr.empty() || config.ipv4Addr == "0.0.0.0");
 }
 
 bool IsMissingDns(const char *value)
@@ -57,46 +69,155 @@ bool IsMissingDns(const char *value)
     return value[0] == '\0' || strcmp(value, "*") == 0;
 }
 
+bool ReadIpv4(const char *text, uint32_t &host)
+{
+    in_addr address{};
+    if (inet_pton(AF_INET, text, &address) != 1) {
+        return false;
+    }
+    host = ntohl(address.s_addr);
+    return true;
+}
+
+bool IsUnicastIpv4(uint32_t address)
+{
+    return (address >> 24) != 0 && (address >> 24) != 127 && (address >> 24) < 224;
+}
+
+bool HasValidLeaseDns(const DhcpResult &result)
+{
+    bool haveDns = false;
+    for (const char *dns : {result.strOptDns1, result.strOptDns2}) {
+        if (IsMissingDns(dns)) {
+            continue;
+        }
+        uint32_t address = 0;
+        if (!ReadIpv4(dns, address) || !IsUnicastIpv4(address)) {
+            return false;
+        }
+        haveDns = true;
+    }
+    return haveDns;
+}
+
 bool ValidLease(const DhcpResult &result)
 {
-    for (const char *value : {result.strOptClientId, result.strOptSubnet,
-        result.strOptRouter1, result.strOptDns1, result.strOptDns2}) {
+    for (const char *value :
+         {result.strOptClientId, result.strOptSubnet, result.strOptRouter1, result.strOptDns1, result.strOptDns2}) {
         if (memchr(value, '\0', DHCP_MAX_FILE_BYTES) == nullptr) {
             NETMGR_EXT_LOG_E("[NearlinkIpShare][Lease] unterminated field");
             return false;
         }
     }
     NETMGR_EXT_LOG_I("[NearlinkIpShare][Lease] success=%{public}d type=%{public}d seconds=%{public}u "
-        "address=%{public}s mask=%{public}s router=%{public}s dns1=%{public}s dns2=%{public}s",
-        result.isOptSuc, result.iptype, result.uOptLeasetime, result.strOptClientId, result.strOptSubnet,
-        result.strOptRouter1, result.strOptDns1, result.strOptDns2);
-    in_addr address {};
+                     "address=%{public}s mask=%{public}s router=%{public}s dns1=%{public}s dns2=%{public}s",
+                     result.isOptSuc, result.iptype, result.uOptLeasetime, result.strOptClientId, result.strOptSubnet,
+                     result.strOptRouter1, result.strOptDns1, result.strOptDns2);
+    uint32_t ip, mask, router;
     if (!result.isOptSuc || result.iptype != DHCP_IPV4 || result.uOptLeasetime == 0 ||
-        inet_pton(AF_INET, result.strOptClientId, &address) != 1 ||
-        strcmp(result.strOptSubnet, SUBNET_MASK) != 0 || strcmp(result.strOptRouter1, "192.168.77.1") != 0) {
+        !ReadIpv4(result.strOptClientId, ip) || !ReadIpv4(result.strOptSubnet, mask) ||
+        !ReadIpv4(result.strOptRouter1, router) || !IsUnicastIpv4(ip) || !IsUnicastIpv4(router)) {
         return false;
     }
-    uint32_t host = ntohl(address.s_addr);
-    if (host < 0xc0a84d02 || host > 0xc0a84d14) {
+    uint32_t hosts = ~mask;
+    if (mask == 0 || hosts < 3 || (hosts & (hosts + 1)) != 0 || (ip & mask) != (router & mask) || ip == router ||
+        (ip & hosts) == 0 || (ip & hosts) == hosts || (router & hosts) == 0 || (router & hosts) == hosts) {
         return false;
     }
-    for (const char *dns : {result.strOptDns1, result.strOptDns2}) {
-        if (!IsMissingDns(dns) && (inet_pton(AF_INET, dns, &address) != 1 || address.s_addr == 0)) {
-            return false;
+    return HasValidLeaseDns(result);
+}
+
+int32_t LeasePrefix(const DhcpResult &result)
+{
+    in_addr mask{};
+    inet_pton(AF_INET, result.strOptSubnet, &mask);
+    uint32_t bits = ntohl(mask.s_addr);
+    int32_t prefix = 0;
+    while (bits & 0x80000000u) {
+        ++prefix;
+        bits <<= 1;
+    }
+    return prefix;
+}
+
+std::string LeaseSubnet(const DhcpResult &result)
+{
+    in_addr address{}, mask{};
+    inet_pton(AF_INET, result.strOptClientId, &address);
+    inet_pton(AF_INET, result.strOptSubnet, &mask);
+    address.s_addr &= mask.s_addr;
+    char text[INET_ADDRSTRLEN]{};
+    inet_ntop(AF_INET, &address, text, sizeof(text));
+    return text;
+}
+
+void PopulateTerminalLink(const DhcpResult &result, NetLinkInfo &linkInfo)
+{
+    linkInfo.ifaceName_ = IFACE_NAME;
+    linkInfo.mtu_ = 1500;
+    INetAddr address;
+    address.type_ = INetAddr::IPV4;
+    address.family_ = AF_INET;
+    address.address_ = result.strOptClientId;
+    address.netMask_ = result.strOptSubnet;
+    address.prefixlen_ = LeasePrefix(result);
+    linkInfo.netAddrList_.push_back(address);
+
+    Route direct;
+    direct.iface_ = IFACE_NAME;
+    direct.destination_.type_ = INetAddr::IPV4;
+    direct.destination_.family_ = AF_INET;
+    direct.destination_.address_ = LeaseSubnet(result);
+    direct.destination_.prefixlen_ = LeasePrefix(result);
+    direct.gateway_.type_ = INetAddr::IPV4;
+    direct.gateway_.family_ = AF_INET;
+    direct.gateway_.address_ = DIRECT_NEXT_HOP;
+    direct.hasGateway_ = false;
+    linkInfo.routeList_.push_back(direct);
+
+    Route route;
+    route.iface_ = IFACE_NAME;
+    route.isDefaultRoute_ = true;
+    route.hasGateway_ = true;
+    route.destination_.type_ = INetAddr::IPV4;
+    route.destination_.family_ = AF_INET;
+    route.destination_.address_ = "0.0.0.0";
+    route.destination_.prefixlen_ = 0;
+    route.gateway_.type_ = INetAddr::IPV4;
+    route.gateway_.family_ = AF_INET;
+    route.gateway_.address_ = result.strOptRouter1;
+    linkInfo.routeList_.push_back(route);
+    for (const char *dnsAddress : {result.strOptDns1, result.strOptDns2}) {
+        if (!IsMissingDns(dnsAddress)) {
+            INetAddr dns;
+            dns.type_ = INetAddr::IPV4;
+            dns.family_ = AF_INET;
+            dns.address_ = dnsAddress;
+            linkInfo.dnsList_.push_back(dns);
         }
     }
-    return true;
+    linkInfo.isUserDefinedDnsServer_ = true;
 }
 
 class UpstreamCallback final : public NetConnCallbackStub {
 public:
-    int32_t NetAvailable(sptr<NetHandle> &) override { return Changed(); }
-    int32_t NetLost(sptr<NetHandle> &) override { return Changed(); }
-    int32_t NetUnavailable() override { return Changed(); }
+    int32_t NetAvailable(sptr<NetHandle> &) override
+    {
+        return Changed();
+    }
+    int32_t NetLost(sptr<NetHandle> &) override
+    {
+        return Changed();
+    }
+    int32_t NetUnavailable() override
+    {
+        return Changed();
+    }
     int32_t NetConnectionPropertiesChange(sptr<NetHandle> &, const sptr<NetLinkInfo> &) override
     {
         return Changed();
     }
+
 private:
     int32_t Changed()
     {
@@ -140,7 +261,7 @@ void DhcpSuccessCallback(int status, const char *ifname, DhcpResult *result)
 void DhcpFailureCallback(int status, const char *ifname, const char *reason)
 {
     NearlinkIpShareController::GetInstance()->OnDhcpFailure(status, ifname == nullptr ? "" : ifname,
-        reason == nullptr ? "" : reason);
+                                                            reason == nullptr ? "" : reason);
 }
 } // namespace
 
@@ -156,18 +277,20 @@ bool NearlinkIpShareController::Init()
     if (shuttingDown_) {
         return false;
     }
-    if (initialized_) {
-        return true;
+    if (nearlinkObserver_ == nullptr) {
+        nearlinkObserver_ =
+            std::make_shared<NearlinkObserver>(std::weak_ptr<NearlinkIpShareController>(shared_from_this()));
     }
-    nearlinkObserver_ = std::make_shared<NearlinkObserver>(std::weak_ptr<NearlinkIpShareController>(shared_from_this()));
+    // The NearLink profile service is recreated when the adapter is toggled.
+    // Its observer slot is process-local, while this controller remains alive,
+    // so refresh the registration on every idempotent initialization.
     int32_t ret = OHOS::Nearlink::NearlinkIpShareClient::GetInstance().RegisterObserver(nearlinkObserver_);
     if (ret != 0) {
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Init] observer registration failed code=%{public}d", ret);
-        nearlinkObserver_.reset();
         return false;
     }
     initialized_ = true;
-    NETMGR_EXT_LOG_I("[NearlinkIpShare][Init] controller ready");
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][Init] controller ready; observer registration refreshed");
     return true;
 }
 
@@ -183,9 +306,9 @@ void NearlinkIpShareController::Uninit()
     auto done = std::make_shared<std::promise<void>>();
     auto future = done->get_future();
     if (NetworkShareTracker::GetInstance().SubmitNearlinkTask([this, done]() {
-        Cleanup();
-        done->set_value();
-    })) {
+            Cleanup();
+            done->set_value();
+        })) {
         future.get();
     }
     OHOS::Nearlink::NearlinkIpShareClient::GetInstance().UnregisterObserver();
@@ -219,7 +342,7 @@ std::string NearlinkIpShareController::MaskPeer(const std::string &address)
 
 int32_t NearlinkIpShareController::IsSupported(const std::string &peerAddress, bool &supported)
 {
-    std::array<uint8_t, 6> bytes {};
+    std::array<uint8_t, 6> bytes{};
     if (!ParsePeerAddress(peerAddress, bytes)) {
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Support] invalid peer address");
         return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
@@ -230,17 +353,17 @@ int32_t NearlinkIpShareController::IsSupported(const std::string &peerAddress, b
     auto result = std::make_shared<std::promise<std::pair<int32_t, bool>>>();
     auto future = result->get_future();
     if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([peerAddress, result]() {
-        bool taskSupported = false;
-        int32_t code = OHOS::Nearlink::NearlinkIpShareClient::GetInstance().IsPeerSupported(
-            peerAddress, taskSupported);
-        result->set_value({code, taskSupported});
-    })) {
+            bool taskSupported = false;
+            int32_t code =
+                OHOS::Nearlink::NearlinkIpShareClient::GetInstance().IsPeerSupported(peerAddress, taskSupported);
+            result->set_value({code, taskSupported});
+        })) {
         return NETMANAGER_EXT_ERR_OPERATION_FAILED;
     }
     auto [ret, taskSupported] = future.get();
     supported = taskSupported;
     NETMGR_EXT_LOG_I("[NearlinkIpShare][Support] peer=%{public}s accepted=%{public}d code=%{public}d",
-        MaskPeer(peerAddress).c_str(), supported, ret);
+                     MaskPeer(peerAddress).c_str(), supported, ret);
     return ret;
 }
 
@@ -256,10 +379,9 @@ int32_t NearlinkIpShareController::StartTerminal(const std::string &gatewayAddre
 
 int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::string &peerAddress)
 {
-    std::array<uint8_t, 6> bytes {};
+    std::array<uint8_t, 6> bytes{};
     if (!ParsePeerAddress(peerAddress, bytes)) {
-        NETMGR_EXT_LOG_E("[NearlinkIpShare][Start] role=%{public}d invalid peer address",
-            static_cast<int32_t>(role));
+        NETMGR_EXT_LOG_E("[NearlinkIpShare][Start] role=%{public}d invalid peer address", static_cast<int32_t>(role));
         return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
     }
     if (!Init()) {
@@ -270,21 +392,26 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
     {
         if (!initialized_ || shuttingDown_) {
             NETMGR_EXT_LOG_E("[NearlinkIpShare][Start] role=%{public}d controller unavailable",
-                static_cast<int32_t>(role));
+                             static_cast<int32_t>(role));
             return NETMANAGER_EXT_ERR_OPERATION_FAILED;
         }
         if (status_.role != NearlinkIpShareRole::NONE) {
             if (status_.role == role && status_.peerAddress == peerAddress && !stopRequested_ &&
                 status_.state != NearlinkIpShareState::ERROR) {
                 auto snapshot = status_;
-                NetworkShareTracker::GetInstance().SubmitNearlinkTask([snapshot]() {
-                    NetworkShareTracker::GetInstance().SendNearlinkStateChange(snapshot);
-                });
+                NetworkShareTracker::GetInstance().SubmitNearlinkTask(
+                    [snapshot]() { NetworkShareTracker::GetInstance().SendNearlinkStateChange(snapshot); });
                 return NETMANAGER_EXT_SUCCESS;
             }
             NETMGR_EXT_LOG_E("[NearlinkIpShare][Start] busy currentRole=%{public}d requestedRole=%{public}d",
-                static_cast<int32_t>(status_.role), static_cast<int32_t>(role));
+                             static_cast<int32_t>(status_.role), static_cast<int32_t>(role));
             return NETMANAGER_EXT_ERR_OPERATION_FAILED;
+        }
+        if (role == NearlinkIpShareRole::GATEWAY) {
+            if (!NetworkShareAdmission::GetInstance().AcquireNearlink()) {
+                return NETMANAGER_EXT_ERR_OPERATION_FAILED;
+            }
+            gatewayReserved_ = true;
         }
         ++generation_;
         stopRequested_ = false;
@@ -299,19 +426,23 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
     }
     auto self = shared_from_this();
     if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, role, peerAddress]() {
-        self->Publish(NearlinkIpShareState::STARTING);
-        int32_t ret = role == NearlinkIpShareRole::GATEWAY ?
-            OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartGateway(peerAddress) :
-            OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartTerminal(peerAddress);
-        NETMGR_EXT_LOG_I("[NearlinkIpShare][Start] role=%{public}d peer=%{public}s accepted=%{public}d",
-            static_cast<int32_t>(role), MaskPeer(peerAddress).c_str(), ret);
-        if (ret != 0) {
-            self->Fail("LINK", ret);
-        } else {
-            self->nearlinkStarted_ = true;
+            self->Publish(NearlinkIpShareState::STARTING);
+            int32_t ret = role == NearlinkIpShareRole::GATEWAY
+                              ? OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartGateway(peerAddress)
+                              : OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartTerminal(peerAddress);
+            NETMGR_EXT_LOG_I("[NearlinkIpShare][Start] role=%{public}d peer=%{public}s accepted=%{public}d",
+                             static_cast<int32_t>(role), MaskPeer(peerAddress).c_str(), ret);
+            if (ret != 0) {
+                self->Fail("LINK", ret);
+            } else {
+                self->nearlinkStarted_ = true;
+            }
+        })) {
+        if (gatewayReserved_) {
+            NetworkShareAdmission::GetInstance().ReleaseNearlink();
+            gatewayReserved_ = false;
         }
-    })) {
-        status_ = NearlinkIpShareStatus {};
+        status_ = NearlinkIpShareStatus{};
         return NETMANAGER_EXT_ERR_OPERATION_FAILED;
     }
     return NETMANAGER_EXT_SUCCESS;
@@ -336,7 +467,7 @@ int32_t NearlinkIpShareController::Stop(NearlinkIpShareRole expectedRole)
         }
         if (status_.role != expectedRole) {
             NETMGR_EXT_LOG_E("[NearlinkIpShare][Stop] role mismatch current=%{public}d requested=%{public}d",
-                static_cast<int32_t>(status_.role), static_cast<int32_t>(expectedRole));
+                             static_cast<int32_t>(status_.role), static_cast<int32_t>(expectedRole));
             return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
         }
         if (stopRequested_) {
@@ -347,9 +478,9 @@ int32_t NearlinkIpShareController::Stop(NearlinkIpShareRole expectedRole)
     ++generation_;
     auto self = shared_from_this();
     if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([self]() {
-        self->Publish(NearlinkIpShareState::STOPPING);
-        self->Cleanup();
-    })) {
+            self->Publish(NearlinkIpShareState::STOPPING);
+            self->Cleanup();
+        })) {
         stopRequested_ = false;
         return NETMANAGER_EXT_ERR_OPERATION_FAILED;
     }
@@ -377,7 +508,7 @@ bool NearlinkIpShareController::IsCurrentSession(uint64_t generation) const
 {
     std::lock_guard lock(mutex_);
     return generation == generation_ && !stopRequested_ && !shuttingDown_ &&
-        status_.role != NearlinkIpShareRole::NONE && status_.state != NearlinkIpShareState::ERROR;
+           status_.role != NearlinkIpShareRole::NONE && status_.state != NearlinkIpShareState::ERROR;
 }
 
 void NearlinkIpShareController::OnNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status)
@@ -401,7 +532,7 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
             status_.state == NearlinkIpShareState::STOPPING) {
             return;
         }
-        std::array<uint8_t, 6> expected {}, actual {};
+        std::array<uint8_t, 6> expected{}, actual{};
         if (static_cast<int32_t>(status.role) != static_cast<int32_t>(role) ||
             !ParsePeerAddress(status.peerAddress, actual) || !ParsePeerAddress(status_.peerAddress, expected) ||
             actual != expected) {
@@ -413,19 +544,17 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
         status_.ifaceName = status.ifaceName;
     }
     NETMGR_EXT_LOG_I("[NearlinkIpShare][NearLink] role=%{public}d state=%{public}d peer=%{public}s iface=%{public}s",
-        static_cast<int32_t>(role), static_cast<int32_t>(status.state), MaskPeer(status.peerAddress).c_str(),
-        status.ifaceName.c_str());
+                     static_cast<int32_t>(role), static_cast<int32_t>(status.state),
+                     MaskPeer(status.peerAddress).c_str(), status.ifaceName.c_str());
     if (status.state == OHOS::Nearlink::NearlinkIpShareState::ERROR) {
         Fail(status.errorStage.empty() ? "LINK" : status.errorStage, status.errorCode);
         return;
     }
-    if (role == NearlinkIpShareRole::GATEWAY &&
-        status.state == OHOS::Nearlink::NearlinkIpShareState::IFACE_READY) {
+    if (role == NearlinkIpShareRole::GATEWAY && status.state == OHOS::Nearlink::NearlinkIpShareState::IFACE_READY) {
         ConfigureGateway();
         return;
     }
-    if (role == NearlinkIpShareRole::TERMINAL &&
-        status.state == OHOS::Nearlink::NearlinkIpShareState::CHANNEL_READY) {
+    if (role == NearlinkIpShareRole::TERMINAL && status.state == OHOS::Nearlink::NearlinkIpShareState::CHANNEL_READY) {
         StartTerminalDhcp();
         return;
     }
@@ -455,8 +584,8 @@ void NearlinkIpShareController::ConfigureGateway()
         return;
     }
     addressConfigured_ = true;
-    NETMGR_EXT_LOG_I("[NearlinkIpShare][Gateway] interface=%{public}s address configured prefix=%{public}d",
-        IFACE_NAME, PREFIX_LENGTH);
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][Gateway] interface=%{public}s address configured prefix=%{public}d", IFACE_NAME,
+                     PREFIX_LENGTH);
 
     ret = NetsysController::GetInstance().NetworkAddInterface(IP_SHARE_LOCAL_NET_ID, IFACE_NAME);
     if (ret != NETSYS_SUCCESS) {
@@ -464,15 +593,15 @@ void NearlinkIpShareController::ConfigureGateway()
         return;
     }
     localInterfaceAdded_ = true;
-    ret = NetsysController::GetInstance().NetworkAddRoute(
-        IP_SHARE_LOCAL_NET_ID, IFACE_NAME, LOCAL_SUBNET, DIRECT_NEXT_HOP);
+    ret = NetsysController::GetInstance().NetworkAddRoute(IP_SHARE_LOCAL_NET_ID, IFACE_NAME, LOCAL_SUBNET,
+                                                          DIRECT_NEXT_HOP);
     if (ret != NETSYS_SUCCESS) {
         Fail("ROUTE", ret);
         return;
     }
     localRouteAdded_ = true;
 
-    DhcpRange range {};
+    DhcpRange range{};
     range.iptype = DHCP_IPV4;
     range.leaseHours = 6;
     if (strcpy_s(range.strTagName, sizeof(range.strTagName), IFACE_NAME) != EOK ||
@@ -489,7 +618,7 @@ void NearlinkIpShareController::ConfigureGateway()
     }
     dhcpServerStarted_ = true;
     NETMGR_EXT_LOG_I("[NearlinkIpShare][Gateway] DHCP interface=%{public}s pool configured and server started",
-        IFACE_NAME);
+                     IFACE_NAME);
 
     ret = NetsysController::GetInstance().StartDnsProxyListen();
     if (ret != NETSYS_SUCCESS) {
@@ -591,8 +720,8 @@ void NearlinkIpShareController::ConfigureUpstream()
         status_.ipv4Address = configuration_.GetNearlinkIpv4Addr();
         status_.hasUpstream = true;
     }
-    NETMGR_EXT_LOG_I("[NearlinkIpShare][Gateway] DNS/forwarding/NAT ready down=%{public}s up=%{public}s",
-        IFACE_NAME, upstreamIface_.c_str());
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][Gateway] DNS/forwarding/NAT ready down=%{public}s up=%{public}s", IFACE_NAME,
+                     upstreamIface_.c_str());
     Publish(NearlinkIpShareState::SERVING);
 }
 
@@ -601,7 +730,7 @@ void NearlinkIpShareController::StartTerminalDhcp()
     if (dhcpClientStarted_) {
         return;
     }
-    std::array<uint8_t, 6> clientKey {};
+    std::array<uint8_t, 6> clientKey{};
     std::string localAddress;
     int32_t addressRet = OHOS::Nearlink::NearlinkHost::GetInstance().GetLocalAddress(localAddress);
     if (addressRet != 0) {
@@ -614,13 +743,13 @@ void NearlinkIpShareController::StartTerminalDhcp()
         return;
     }
     Publish(NearlinkIpShareState::DHCP);
-    static const ClientCallBack callback {DhcpSuccessCallback, DhcpFailureCallback};
+    static const ClientCallBack callback{DhcpSuccessCallback, DhcpFailureCallback};
     int32_t ret = RegisterDhcpClientCallBack(IFACE_NAME, &callback);
     if (ret != DHCP_SUCCESS) {
         Fail("DHCP", ret);
         return;
     }
-    RouterConfig config {};
+    RouterConfig config{};
     if (strcpy_s(config.ifname, sizeof(config.ifname), IFACE_NAME) != EOK) {
         Fail("DHCP", NETMANAGER_EXT_ERR_OPERATION_FAILED);
         return;
@@ -640,7 +769,7 @@ void NearlinkIpShareController::StartTerminalDhcp()
 void NearlinkIpShareController::OnDhcpSuccess(int32_t status, const std::string &iface, const DhcpResult &result)
 {
     NETMGR_EXT_LOG_I("[NearlinkIpShare][DHCP] async success callback interface=%{public}s code=%{public}d",
-        iface.c_str(), status);
+                     iface.c_str(), status);
     std::lock_guard lock(mutex_);
     auto self = shared_from_this();
     NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, status, iface, result, generation = generation_]() {
@@ -659,11 +788,16 @@ void NearlinkIpShareController::OnDhcpFailure(int32_t status, const std::string 
 {
     (void)reason;
     NETMGR_EXT_LOG_E("[NearlinkIpShare][DHCP] async failure callback interface=%{public}s code=%{public}d",
-        iface.c_str(), status);
+                     iface.c_str(), status);
     std::lock_guard lock(mutex_);
     auto self = shared_from_this();
     NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, status, iface, generation = generation_]() {
         if (self->IsCurrentSession(generation) && self->dhcpClientStarted_ && iface == IFACE_NAME) {
+            if ((status == DHCP_RENEW_FAILED || status == DHCP_RENEW_TIMEOUT) && self->netSupplierId_ != 0 &&
+                std::chrono::steady_clock::now() < self->leaseExpiry_) {
+                NETMGR_EXT_LOG_I("[NearlinkIpShare][DHCP] temporary renewal failure; valid lease retained");
+                return;
+            }
             self->Fail("DHCP", status);
         }
     });
@@ -671,7 +805,7 @@ void NearlinkIpShareController::OnDhcpFailure(int32_t status, const std::string 
 
 void NearlinkIpShareController::ApplyTerminalNetwork(const DhcpResult &result)
 {
-    std::set<NetCap> caps {NET_CAPABILITY_INTERNET, NET_CAPABILITY_NOT_VPN};
+    std::set<NetCap> caps{NET_CAPABILITY_INTERNET, NET_CAPABILITY_NOT_VPN};
     int32_t ret = NETMANAGER_SUCCESS;
     if (netSupplierId_ == 0) {
         ret = NetConnClient::GetInstance().RegisterNetSupplier(BEARER_BLUETOOTH, IFACE_NAME, caps, netSupplierId_);
@@ -685,49 +819,7 @@ void NearlinkIpShareController::ApplyTerminalNetwork(const DhcpResult &result)
         Fail("INTERNAL", NETMANAGER_EXT_ERR_LOCAL_PTR_NULL);
         return;
     }
-    linkInfo->ifaceName_ = IFACE_NAME;
-    linkInfo->mtu_ = 1500;
-    INetAddr address;
-    address.type_ = INetAddr::IPV4;
-    address.family_ = AF_INET;
-    address.address_ = result.strOptClientId;
-    address.netMask_ = result.strOptSubnet;
-    address.prefixlen_ = PREFIX_LENGTH;
-    linkInfo->netAddrList_.push_back(address);
-
-    Route direct;
-    direct.iface_ = IFACE_NAME;
-    direct.destination_.type_ = INetAddr::IPV4;
-    direct.destination_.family_ = AF_INET;
-    direct.destination_.address_ = "192.168.77.0";
-    direct.destination_.prefixlen_ = PREFIX_LENGTH;
-    direct.gateway_.type_ = INetAddr::IPV4;
-    direct.gateway_.family_ = AF_INET;
-    direct.gateway_.address_ = DIRECT_NEXT_HOP;
-    direct.hasGateway_ = false;
-    linkInfo->routeList_.push_back(direct);
-
-    Route route;
-    route.iface_ = IFACE_NAME;
-    route.isDefaultRoute_ = true;
-    route.destination_.type_ = INetAddr::IPV4;
-    route.destination_.family_ = AF_INET;
-    route.destination_.address_ = "0.0.0.0";
-    route.destination_.prefixlen_ = 0;
-    route.gateway_.type_ = INetAddr::IPV4;
-    route.gateway_.family_ = AF_INET;
-    route.gateway_.address_ = result.strOptRouter1;
-    linkInfo->routeList_.push_back(route);
-    for (const char *dnsAddress : {result.strOptDns1, result.strOptDns2}) {
-        if (!IsMissingDns(dnsAddress)) {
-            INetAddr dns;
-            dns.type_ = INetAddr::IPV4;
-            dns.family_ = AF_INET;
-            dns.address_ = dnsAddress;
-            linkInfo->dnsList_.push_back(dns);
-        }
-    }
-    linkInfo->isUserDefinedDnsServer_ = true;
+    PopulateTerminalLink(result, *linkInfo);
     sptr<NetSupplierInfo> supplierInfo = sptr<NetSupplierInfo>::MakeSptr();
     if (supplierInfo == nullptr) {
         Fail("INTERNAL", NETMANAGER_EXT_ERR_LOCAL_PTR_NULL);
@@ -754,7 +846,9 @@ void NearlinkIpShareController::ApplyTerminalNetwork(const DhcpResult &result)
         status_.hasUpstream = false;
     }
     NETMGR_EXT_LOG_I("[NearlinkIpShare][Terminal] DHCP callback applied interface=%{public}s route=2 dns=%{public}zu "
-        "validation=requested", IFACE_NAME, linkInfo->dnsList_.size());
+                     "validation=requested",
+                     IFACE_NAME, linkInfo->dnsList_.size());
+    leaseExpiry_ = std::chrono::steady_clock::now() + std::chrono::seconds(result.uOptLeasetime);
     Publish(NearlinkIpShareState::ACTIVE);
 }
 
@@ -774,7 +868,7 @@ int32_t NearlinkIpShareController::CleanupUpstream()
     }
     if (interfaceForwarding_) {
         release(interfaceForwarding_,
-            NetsysController::GetInstance().IpfwdRemoveInterfaceForward(IFACE_NAME, upstreamIface_));
+                NetsysController::GetInstance().IpfwdRemoveInterfaceForward(IFACE_NAME, upstreamIface_));
     }
     if (forwardingEnabled_) {
         release(forwardingEnabled_, NetsysController::GetInstance().IpDisableForwarding(FORWARDING_REQUESTER));
@@ -800,12 +894,12 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
         }
         return ret == 0;
     };
-    if (upstreamCallback_ != nullptr && result("upstream callback",
-        NetConnClient::GetInstance().UnregisterNetConnCallback(upstreamCallback_))) {
+    if (upstreamCallback_ != nullptr &&
+        result("upstream callback", NetConnClient::GetInstance().UnregisterNetConnCallback(upstreamCallback_))) {
         upstreamCallback_ = nullptr;
     }
-    if (netSupplierId_ != 0 && result("supplier/routes/DNS",
-        NetConnClient::GetInstance().UnregisterNetSupplier(netSupplierId_))) {
+    if (netSupplierId_ != 0 &&
+        result("supplier/routes/DNS", NetConnClient::GetInstance().UnregisterNetSupplier(netSupplierId_))) {
         netSupplierId_ = 0;
     }
     result("NAT/forwarding", CleanupUpstream());
@@ -818,12 +912,14 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
     if (dhcpServerStarted_ && result("DHCP server", StopDhcpServer(IFACE_NAME))) {
         dhcpServerStarted_ = false;
     }
-    if (localRouteAdded_ && result("local route", NetsysController::GetInstance().NetworkRemoveRoute(
-        IP_SHARE_LOCAL_NET_ID, IFACE_NAME, LOCAL_SUBNET, DIRECT_NEXT_HOP))) {
+    if (localRouteAdded_ &&
+        result("local route", NetsysController::GetInstance().NetworkRemoveRoute(IP_SHARE_LOCAL_NET_ID, IFACE_NAME,
+                                                                                 LOCAL_SUBNET, DIRECT_NEXT_HOP))) {
         localRouteAdded_ = false;
     }
-    if (!localRouteAdded_ && localInterfaceAdded_ && result("local interface",
-        NetsysController::GetInstance().NetworkRemoveInterface(IP_SHARE_LOCAL_NET_ID, IFACE_NAME))) {
+    if (!localRouteAdded_ && localInterfaceAdded_ &&
+        result("local interface",
+               NetsysController::GetInstance().NetworkRemoveInterface(IP_SHARE_LOCAL_NET_ID, IFACE_NAME))) {
         localInterfaceAdded_ = false;
     }
     if (addressConfigured_) {
@@ -851,9 +947,13 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
     }
     {
         std::lock_guard lock(mutex_);
+        if (error == 0 && gatewayReserved_) {
+            NetworkShareAdmission::GetInstance().ReleaseNearlink();
+            gatewayReserved_ = false;
+        }
         stopRequested_ = false;
         if (error == 0 && publishIdle) {
-            status_ = NearlinkIpShareStatus {};
+            status_ = NearlinkIpShareStatus{};
         }
         status_.ipv4Address.clear();
         status_.hasUpstream = false;
@@ -864,7 +964,7 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
     }
     if (publishIdle) {
         // Publish the completed snapshot without overwriting a newly reserved start.
-        NetworkShareTracker::GetInstance().SendNearlinkStateChange(NearlinkIpShareStatus {});
+        NetworkShareTracker::GetInstance().SendNearlinkStateChange(NearlinkIpShareStatus{});
     }
     return true;
 }
@@ -878,7 +978,7 @@ void NearlinkIpShareController::Fail(const std::string &stage, int32_t code)
         status_.state = NearlinkIpShareState::ERROR;
     }
     NETMGR_EXT_LOG_E("[NearlinkIpShare][Failure] role=%{public}d errorStage=%{public}s code=%{public}d",
-        static_cast<int32_t>(failedStatus.role), stage.c_str(), code);
+                     static_cast<int32_t>(failedStatus.role), stage.c_str(), code);
     if (!Cleanup(false)) {
         return;
     }
@@ -902,9 +1002,10 @@ void NearlinkIpShareController::Publish(NearlinkIpShareState state, const std::s
         status_.errorCode = errorCode;
         snapshot = status_;
         NETMGR_EXT_LOG_I("[NearlinkIpShare][State] role=%{public}d %{public}d->%{public}d peer=%{public}s "
-            "errorStage=%{public}s code=%{public}d", static_cast<int32_t>(status_.role),
-            static_cast<int32_t>(previous), static_cast<int32_t>(state),
-            MaskPeer(status_.peerAddress).c_str(), errorStage.c_str(), errorCode);
+                         "errorStage=%{public}s code=%{public}d",
+                         static_cast<int32_t>(status_.role), static_cast<int32_t>(previous),
+                         static_cast<int32_t>(state), MaskPeer(status_.peerAddress).c_str(), errorStage.c_str(),
+                         errorCode);
     }
     NetworkShareTracker::GetInstance().SendNearlinkStateChange(snapshot);
 }

@@ -15,6 +15,7 @@
 
 #include "networkshare_client.h"
 
+#include <map>
 #include <thread>
 
 #include "iservice_registry.h"
@@ -31,6 +32,26 @@ constexpr uint32_t WAIT_FOR_SERVICE_TIME_MS = 500;
 constexpr uint32_t MAX_GET_SERVICE_COUNT = 10;
 std::condition_variable g_cv;
 std::mutex g_mutexCv;
+// Keep the published NetworkShareClient layout unchanged for old binary callers.
+std::mutex g_nearlinkCallbacksMutex;
+std::map<const NetworkShareClient *, sptr<INearlinkIpShareEventCallback>> g_nearlinkCallbacks;
+
+sptr<INearlinkIpShareEventCallback> GetNearlinkCallback(const NetworkShareClient *client)
+{
+    std::lock_guard lock(g_nearlinkCallbacksMutex);
+    auto it = g_nearlinkCallbacks.find(client);
+    return it == g_nearlinkCallbacks.end() ? nullptr : it->second;
+}
+
+void SetNearlinkCallback(const NetworkShareClient *client, const sptr<INearlinkIpShareEventCallback> &callback)
+{
+    std::lock_guard lock(g_nearlinkCallbacksMutex);
+    if (callback == nullptr) {
+        g_nearlinkCallbacks.erase(client);
+    } else {
+        g_nearlinkCallbacks[client] = callback;
+    }
+}
 } // namespace
 void NetworkShareLoadCallback::OnLoadSystemAbilitySuccess(
     int32_t systemAbilityId, const sptr<IRemoteObject> &remoteObject)
@@ -58,11 +79,12 @@ const sptr<IRemoteObject> &NetworkShareLoadCallback::GetRemoteObject() const
 }
 
 NetworkShareClient::NetworkShareClient()
-    : networkShareService_(nullptr), deathRecipient_(nullptr), callback_(nullptr), nearlinkCallback_(nullptr) {}
+    : networkShareService_(nullptr), deathRecipient_(nullptr), callback_(nullptr) {}
 
 NetworkShareClient::~NetworkShareClient()
 {
     isDestroyed_ = true;
+    SetNearlinkCallback(this, nullptr);
     NETMGR_EXT_LOG_I("~NetworkShareClient : Destroy NetworkShareClient");
     sptr<INetworkShareService> proxy = GetProxy();
     if (proxy == nullptr) {
@@ -300,7 +322,7 @@ int32_t NetworkShareClient::RegisterNearlinkIpShareEvent(sptr<INearlinkIpShareEv
     int32_t ret = proxy->RegisterNearlinkIpShareEvent(callback);
     if (ret == NETMANAGER_EXT_SUCCESS) {
         std::lock_guard lock(mutex_);
-        nearlinkCallback_ = callback;
+        SetNearlinkCallback(this, callback);
     }
     return ret;
 }
@@ -317,7 +339,7 @@ int32_t NetworkShareClient::UnregisterNearlinkIpShareEvent(sptr<INearlinkIpShare
     int32_t ret = proxy->UnregisterNearlinkIpShareEvent(callback);
     if (ret == NETMANAGER_EXT_SUCCESS) {
         std::lock_guard lock(mutex_);
-        nearlinkCallback_ = nullptr;
+        SetNearlinkCallback(this, nullptr);
     }
     return ret;
 }
@@ -380,7 +402,7 @@ void NetworkShareClient::RecoverCallback()
     {
         std::lock_guard lock(mutex_);
         localCallback = callback_;
-        localNearlinkCallback = nearlinkCallback_;
+        localNearlinkCallback = GetNearlinkCallback(this);
     }
     if (proxy != nullptr && localCallback != nullptr) {
         int32_t ret = proxy->RegisterSharingEvent(localCallback);
@@ -415,7 +437,7 @@ void NetworkShareClient::OnRemoteDied(const wptr<IRemoteObject> &remote)
         local->RemoveDeathRecipient(deathRecipient_);
         networkShareService_ = nullptr;
         localCallback = callback_;
-        localNearlinkCallback = nearlinkCallback_;
+        localNearlinkCallback = GetNearlinkCallback(this);
     }
 
     std::thread([this]() { this->RestartNetTetheringManagerSysAbility(); }).detach();
