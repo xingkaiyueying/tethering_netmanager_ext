@@ -19,6 +19,7 @@
 #include <net/if.h>
 #include <sys/time.h>
 #include <shared_mutex>
+#include <netinet/icmp6.h>
 
 namespace OHOS {
 namespace NetManagerStandard {
@@ -72,7 +73,7 @@ RouterAdvertisementDaemon::~RouterAdvertisementDaemon()
 
 bool RouterAdvertisementDaemon::IsSocketValid()
 {
-    return socket_ > 0;
+    return socket_ >= 0;
 }
 
 void RouterAdvertisementDaemon::HupRaThread()
@@ -90,7 +91,7 @@ int32_t RouterAdvertisementDaemon::Init(const std::string &ifaceName)
     }
     dstIpv6Addr_.sin6_port = 0;
     dstIpv6Addr_.sin6_family = AF_INET6;
-    dstIpv6Addr_.sin6_scope_id = 0;
+    dstIpv6Addr_.sin6_scope_id = raParams_->index_;
     inet_pton(AF_INET6, DST_IPV6, &dstIpv6Addr_.sin6_addr);
     return NETMANAGER_EXT_SUCCESS;
 }
@@ -170,6 +171,18 @@ bool RouterAdvertisementDaemon::CreateRASocket()
         return false;
     }
     uint32_t hoplimitNew = DEFAULT_HOP_LIMIT;
+    int receiveHop = 1;
+    if (setsockopt(socket_, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &receiveHop, sizeof(receiveHop)) < 0) {
+        CloseRaSocket();
+        return false;
+    }
+    ipv6_mreq group{};
+    inet_pton(AF_INET6, "ff02::2", &group.ipv6mr_multiaddr);
+    group.ipv6mr_interface = raParams_->index_;
+    if (setsockopt(socket_, IPPROTO_IPV6, IPV6_JOIN_GROUP, &group, sizeof(group)) < 0) {
+        CloseRaSocket();
+        return false;
+    }
     if (setsockopt(socket_, IPPROTO_IPV6, IPV6_UNICAST_HOPS, (void *)&hoplimitNew, sizeof(hoplimitNew)) == -1) {
         NETMGR_EXT_LOG_E(" setsockopt IPV6_UNICAST_HOPS fail");
     }
@@ -182,7 +195,7 @@ bool RouterAdvertisementDaemon::CreateRASocket()
 void RouterAdvertisementDaemon::CloseRaSocket()
 {
     NETMGR_EXT_LOG_I("CloseRaSocket Start");
-    if (socket_ > 0) {
+    if (socket_ >= 0) {
         close(socket_);
     }
     socket_ = -1;
@@ -209,6 +222,7 @@ bool RouterAdvertisementDaemon::MaybeSendRa(sockaddr_in6 &dest)
 
 void RouterAdvertisementDaemon::ProcessSendRaPacket()
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!IsSocketValid() || stopRaThread_) {
         NETMGR_EXT_LOG_E("socket closed or stopRaThread!");
         return;
@@ -224,26 +238,50 @@ void RouterAdvertisementDaemon::RunRecvRsThread()
     NETMGR_EXT_LOG_I("Start to receive Rs thread, socket[%{public}d]", socket_);
     sockaddr_in6 solicitor = {};
     uint8_t solicitation[IPV6_MIN_MTU] = {};
-    socklen_t sendLen = sizeof(solicitation);
     while (IsSocketValid() && !stopRaThread_) {
         if (memset_s(solicitation, sizeof(solicitation), 0, sizeof(solicitation)) != EOK) {
             break;
         }
-        auto rval =
-            recvfrom(socket_, solicitation, IPV6_MIN_MTU, 0, reinterpret_cast<sockaddr *>(&solicitor), &sendLen);
+        iovec buffer{solicitation, sizeof(solicitation)};
+        alignas(cmsghdr) char control[CMSG_SPACE(sizeof(int))]{};
+        msghdr message{};
+        message.msg_name = &solicitor; message.msg_namelen = sizeof(solicitor);
+        message.msg_iov = &buffer; message.msg_iovlen = 1;
+        message.msg_control = control; message.msg_controllen = sizeof(control);
+        auto rval = recvmsg(socket_, &message, 0);
         if (rval <= 0 && errno != EAGAIN && errno != EINTR) {
             NETMGR_EXT_LOG_E("recvfrom failed, rval[%{public}zd], errno[%{public}d]", rval, errno);
             break;
         }
-        if (solicitation[0] != ICMPV6_ND_ROUTER_SOLICIT_TYPE) {
+        int hops = -1;
+        for (auto c = CMSG_FIRSTHDR(&message); c; c = CMSG_NXTHDR(&message, c)) {
+            if (c->cmsg_level == IPPROTO_IPV6 && c->cmsg_type == IPV6_HOPLIMIT && c->cmsg_len >= CMSG_LEN(sizeof(int)))
+                memcpy(&hops, CMSG_DATA(c), sizeof(hops));
+        }
+        if (rval < 8 || solicitation[0] != ICMPV6_ND_ROUTER_SOLICIT_TYPE || solicitation[1] != 0 || hops != 255 ||
+            (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) != 0 ||
+            (!IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr) && !IN6_IS_ADDR_LINKLOCAL(&solicitor.sin6_addr))) {
             continue;
         }
+        bool valid = true;
+        for (size_t i = 8; i < static_cast<size_t>(rval);) {
+            if (static_cast<size_t>(rval) - i < 2 || solicitation[i + 1] == 0 ||
+                size_t(solicitation[i + 1]) * 8 > static_cast<size_t>(rval) - i ||
+                (solicitation[i] == 1 && (solicitation[i + 1] != 1 || IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr)))) {
+                valid = false; break;
+            }
+            i += size_t(solicitation[i + 1]) * 8;
+        }
+        if (!valid) continue;
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr)) solicitor = dstIpv6Addr_;
+        solicitor.sin6_scope_id = raParams_->index_;
         if (AssembleRaLocked()) {
             MaybeSendRa(solicitor);
         }
     }
+    std::lock_guard<std::mutex> lock(mutex_);
     CloseRaSocket();
-    raParams_ = nullptr;
 }
 
 RaParams RouterAdvertisementDaemon::GetDeprecatedRaParams(RaParams &oldRa, RaParams &newRa)
@@ -264,6 +302,7 @@ RaParams RouterAdvertisementDaemon::GetDeprecatedRaParams(RaParams &oldRa, RaPar
 
 void RouterAdvertisementDaemon::BuildNewRa(const RaParams &newRa)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     raParams_->Set(newRa);
 }
 
@@ -290,6 +329,18 @@ void RouterAdvertisementDaemon::ResetRaRetryInterval()
 bool RouterAdvertisementDaemon::AssembleRaLocked()
 {
     NETMGR_EXT_LOG_D("Generate Ra package start");
+    if (!raParams_) return false;
+    const size_t dnsCount = raParams_->layer3_ ? raParams_->dnses_.size() : raParams_->prefixes_.size();
+    const size_t required = RA_HEADER_SIZE + sizeof(Icmpv6SllOpt) + sizeof(Icmpv6MtuOpt) +
+        raParams_->prefixes_.size() * sizeof(Icmpv6PrefixInfoOpt) + sizeof(Icmpv6RdnsOpt) + dnsCount * IPV6_ADDR_LEN;
+    if (required > sizeof(raPacket_) || (raParams_->layer3_ &&
+        (raParams_->prefixes_.size() > 4 || dnsCount > 4 || raParams_->mtu_ < 1280 || raParams_->mtu_ > 1500)))
+        return false;
+    for (const auto &prefix : raParams_->prefixes_) {
+        if (raParams_->layer3_ && (prefix.prefixesLength != 64 || prefix.preferredLifetime > prefix.validLifetime ||
+            IN6_IS_ADDR_MULTICAST(&prefix.prefix) || IN6_IS_ADDR_LINKLOCAL(&prefix.prefix) ||
+            IN6_IS_ADDR_UNSPECIFIED(&prefix.prefix))) return false;
+    }
     uint8_t raBuf[IPV6_MIN_MTU] = {};
     uint8_t *ptr = raBuf;
     uint16_t raHeadLen = PutRaHeader(ptr);
@@ -338,7 +389,7 @@ uint16_t RouterAdvertisementDaemon::PutRaHeader(uint8_t *raBuf)
     raHeadSt.type = ICMPV6_ND_ROUTER_ADVERT_TYPE;
     raHeadSt.curHopLimit = DEFAULT_HOPLIMIT;
     raHeadSt.flags = DEFAULT_ROUTER_PRE;
-    raHeadSt.routerLifetime = htons(DEFAULT_LIFETIME);
+    raHeadSt.routerLifetime = htons(raParams_->layer3_ ? raParams_->routerLifetime_ : DEFAULT_LIFETIME);
     if (memcpy_s(raBuf, sizeof(Icmpv6HeadSt), &raHeadSt, sizeof(Icmpv6HeadSt)) != EOK) {
         return 0;
     }
@@ -422,8 +473,8 @@ uint16_t RouterAdvertisementDaemon::PutRaPio(uint8_t *raBuf, IpPrefix &ipp)
     prefixInfoSt.len = sizeof(Icmpv6PrefixInfoOpt) / UNITS_OF_OCTETS;
     prefixInfoSt.prefixLen = ipp.prefixesLength;
     prefixInfoSt.flag = PREFIX_INFO_FLAGS;
-    prefixInfoSt.validLifetime = htonl(DEFAULT_LIFETIME);
-    prefixInfoSt.prefLifetime = htonl(DEFAULT_LIFETIME);
+    prefixInfoSt.validLifetime = htonl(raParams_->layer3_ ? ipp.validLifetime : DEFAULT_LIFETIME);
+    prefixInfoSt.prefLifetime = htonl(raParams_->layer3_ ? ipp.preferredLifetime : DEFAULT_LIFETIME);
     prefixInfoSt.type = ND_OPTION_PIO_TYPE;
     if (memcpy_s(prefixInfoSt.prefix, IPV6_ADDR_LEN, ipp.prefix.s6_addr, IPV6_ADDR_LEN) != EOK) {
         return 0;
@@ -450,17 +501,19 @@ uint16_t RouterAdvertisementDaemon::PutRaRdnss(uint8_t *raBuf)
     //  |                                                               |
     //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     Icmpv6RdnsOpt rdnsInfoSt;
-    size_t raRdnsNum = raParams_->prefixes_.size();
+    size_t raRdnsNum = raParams_->layer3_ ? raParams_->dnses_.size() : raParams_->prefixes_.size();
+    if (raRdnsNum == 0) return 0;
     rdnsInfoSt.type = ND_OPTION_RDNSS_TYPE;
     rdnsInfoSt.len = (sizeof(Icmpv6RdnsOpt) + raRdnsNum * IPV6_ADDR_LEN) / UNITS_OF_OCTETS;
-    rdnsInfoSt.lifetime = htonl(DEFAULT_LIFETIME);
+    rdnsInfoSt.lifetime = htonl(raParams_->layer3_ ? raParams_->rdnssLifetime_ : DEFAULT_LIFETIME);
     if (memcpy_s(raBuf, sizeof(Icmpv6RdnsOpt), &rdnsInfoSt, sizeof(Icmpv6RdnsOpt)) != EOK) {
         return 0;
     }
     raBuf += sizeof(Icmpv6RdnsOpt);
     uint32_t index = 0;
-    for (IpPrefix ipp : raParams_->prefixes_) {
-        if (memcpy_s(raBuf + index * IPV6_ADDR_LEN, IPV6_ADDR_LEN, ipp.address.s6_addr, IPV6_ADDR_LEN) != EOK) {
+    for (size_t i = 0; i < raRdnsNum; ++i) {
+        const auto &address = raParams_->layer3_ ? raParams_->dnses_[i] : raParams_->prefixes_[i].address;
+        if (memcpy_s(raBuf + index * IPV6_ADDR_LEN, IPV6_ADDR_LEN, address.s6_addr, IPV6_ADDR_LEN) != EOK) {
             return 0;
         }
         index++;
