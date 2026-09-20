@@ -4,8 +4,16 @@
 import("//build/ohos.gni")
 
 ohos_executable("sleip_netshare_stage3") {
-  sources = [ "sleip_netshare_stage3.c", "sleip_ipv6_config.cpp" ]
-  deps = [ "../../services/networksharemanager:net_tether_manager" ]
+  sources = [
+    "../../services/networksharemanager/src/router_advertisement_daemon.cpp",
+    "../../services/networksharemanager/src/router_advertisement_params.cpp",
+    "sleip_ipv6_config.cpp",
+    "sleip_netshare_stage3.c",
+  ]
+  include_dirs = [
+    "../../interfaces/innerkits/include",
+    "../../services/networksharemanager/include",
+  ]
   external_deps = [
     "c_utils:utils",
     "ffrt:libffrt",
