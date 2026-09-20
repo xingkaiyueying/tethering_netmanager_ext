@@ -17,7 +17,6 @@ import("//foundation/communication/netmanager_ext/netmanager_ext_config.gni")
 config("net_tether_manager_config") {
   include_dirs = [
     "$EXT_INNERKITS_ROOT/include",
-    "$SUBSYSTEM_DIR/netmanager_base/utils/common_utils/include",
     "$EXT_INNERKITS_ROOT/netshareclient/include",
     "$EXT_INNERKITS_ROOT/netshareclient/include/proxy",
     "$EXT_INNERKITS_ROOT/netshareclient/include/proxy/ipccallback",
