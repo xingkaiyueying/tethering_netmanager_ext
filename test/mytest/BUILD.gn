@@ -6,7 +6,12 @@ import("//build/ohos.gni")
 ohos_executable("sleip_netshare_stage3") {
   sources = [ "sleip_netshare_stage3.c", "sleip_ipv6_config.cpp" ]
   deps = [ "../../services/networksharemanager:net_tether_manager" ]
-  external_deps = [ "hilog:libhilog", "ffrt:libffrt", "c_utils:utils" ]
+  external_deps = [
+    "c_utils:utils",
+    "ffrt:libffrt",
+    "hilog:libhilog",
+    "netmanager_base:net_manager_common",
+  ]
   subsystem_name = "communication"
   part_name = "netmanager_ext"
   install_enable = true
