@@ -17,6 +17,7 @@
 #define ROUTER_ADVERTISEMENT_PARAMS_H
 
 #include <any>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <map>
