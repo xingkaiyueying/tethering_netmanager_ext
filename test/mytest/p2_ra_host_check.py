@@ -87,6 +87,12 @@ struct ifreq {char ifr_name[16];short ifr_flags;};
 enum {IFF_UP=1,IFF_NOARP=128,IFF_MULTICAST=4096,IFNAMSIZ=16};
 unsigned if_nametoindex(const char*);
 ''')
+    put('ifaddrs.h', '''#pragma once
+#include <sys/socket.h>
+struct ifaddrs {ifaddrs *ifa_next; char *ifa_name; sockaddr *ifa_addr;};
+int getifaddrs(ifaddrs **);
+void freeifaddrs(ifaddrs *);
+''')
     put('sys/ioctl.h', 'enum {SIOCGIFFLAGS=1,SIOCSIFFLAGS=2};\nint ioctl(int,unsigned long,...);\n')
     put('sys/wait.h', '#define WIFEXITED(s) (true)\n#define WEXITSTATUS(s) (s)\nint waitpid(int,int*,int);\nint fork();\n')
     put('arpa/inet.h', '#include <netinet/in.h>\nint inet_pton(int,const char*,void*);\nconst char* inet_ntop(int,const void*,char*,size_t);\n')
@@ -125,6 +131,11 @@ ssize_t recvmsg(int,msghdr*,int);
 ''')
     with (out/'securec.h').open('a', encoding='utf-8') as file:
         file.write('inline int strncpy_s(char*d,size_t n,const char*s,size_t k){if(k>=n)return -1;memcpy(d,s,k);d[k]=0;return 0;}\n')
-    for source in (src/'src/router_advertisement_daemon.cpp', repo/'test/mytest/sleip_ipv6_config.cpp'):
+    fixture = repo/'test/mytest/sleip_ipv6_config.cpp'
+    fixture_text = fixture.read_text(encoding='utf-8')
+    assert 'if (HasAddress(address)) return true;' in fixture_text
+    assert 'owner.KeepAddresses();' in fixture_text
+    assert 'gateway_retained_until_interface_cleanup=1' in fixture_text
+    for source in (src/'src/router_advertisement_daemon.cpp', fixture):
         subprocess.run(['g++','-std=c++17','-include','memory','-fsyntax-only','-I'+str(out),str(source)],check=True)
-    print('RA daemon and native IPv6 fixture syntax=PASS (OS/FFRT boundary stubbed)')
+    print('RA daemon and native IPv6 fixture syntax/retained-address policy=PASS (OS/FFRT boundary stubbed)')

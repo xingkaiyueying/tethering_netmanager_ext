@@ -1,6 +1,9 @@
 /* Copyright (c) 2026 Huawei Device Co., Ltd. Licensed under the Apache License, Version 2.0. */
 #include "router_advertisement_daemon.h"
+#include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <net/if.h>
@@ -72,10 +75,29 @@ public:
     }
     bool Add(const std::string &address)
     {
+        if (HasAddress(address)) return true;
         if (Ip({"-6", "addr", "add", address, "dev", "sleip0"}) != 0) return false;
         addresses.push_back(address); return true;
     }
+    void KeepAddresses() { addresses.clear(); }
 private:
+    bool HasAddress(const std::string &address) const
+    {
+        const std::string text = address.substr(0, address.find('/'));
+        in6_addr expected{};
+        if (inet_pton(AF_INET6, text.c_str(), &expected) != 1) return false;
+        ifaddrs *head = nullptr;
+        if (getifaddrs(&head) != 0) return false;
+        bool found = false;
+        for (auto item = head; item != nullptr && !found; item = item->ifa_next) {
+            if (item->ifa_addr == nullptr || item->ifa_addr->sa_family != AF_INET6 ||
+                strcmp(item->ifa_name, "sleip0") != 0) continue;
+            const auto *actual = reinterpret_cast<const sockaddr_in6 *>(item->ifa_addr);
+            found = memcmp(&actual->sin6_addr, &expected, sizeof(expected)) == 0;
+        }
+        freeifaddrs(head);
+        return found;
+    }
     std::map<std::string, std::string> saved;
     std::vector<std::string> addresses;
     short flags{0}; bool haveFlags{false};
@@ -166,5 +188,14 @@ extern "C" int SleipIpv6Ra(int argc, char **argv)
     const unsigned index = if_nametoindex("sleip0");
     for (uint32_t i = 0; i < seconds && if_nametoindex("sleip0") == index; ++i) sleep(1);
     daemon->StopRa();
+    // Renumbering and single-address deletion are verified after this RA process returns.
+    // Keep successful gateway addresses until the NearLink round removes sleip0; a later
+    // RA fixture in the same generation reuses the existing LLA and adds its new prefix.
+    if (if_nametoindex("sleip0") == index) {
+        owner.KeepAddresses();
+        printf("S2_RA_STOPPED prefix=%s/64 gateway=%s gateway_retained_until_interface_cleanup=1\n",
+            argv[2], gateway);
+        fflush(stdout);
+    }
     return 0;
 }
