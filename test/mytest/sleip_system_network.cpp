@@ -18,7 +18,7 @@ extern "C" int SleipSystemNetwork(int argc, char **argv)
     uint64_t token = GetAccessTokenId(&info);
     if (!token || SetSelfTokenID(token) != 0 ||
         OHOS::Security::AccessToken::AccessTokenKit::ReloadNativeTokenInfo() != 0) return 1;
-    auto &client = NetworkShareClient::GetInstance();
+    auto &client = *DelayedSingleton<NetworkShareClient>::GetInstance();
     int32_t ret = -1;
     if (argc == 5 && strcmp(argv[2], "start") == 0) {
         if (strcmp(argv[3], "G") == 0) ret = client.StartNearlinkGatewayWithMode(argv[4], 3);
