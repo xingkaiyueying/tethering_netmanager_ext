@@ -676,13 +676,13 @@ int32_t NetworkShareTracker::RegisterSharingEvent(sptr<ISharingEventCallback> ca
     return NETMANAGER_EXT_SUCCESS;
 }
 
-bool NetworkShareTracker::SubmitNearlinkTask(const std::function<void()> &task)
+bool NetworkShareTracker::SubmitNearlinkTask(const std::function<void()> &task, uint64_t delayUs)
 {
     if (networkShareTrackerFfrtQueue_ == nullptr || !task) {
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Worker] queue unavailable");
         return false;
     }
-    networkShareTrackerFfrtQueue_->submit(task, ffrt::task_attr().name("NearlinkIpShare_task"));
+    networkShareTrackerFfrtQueue_->submit(task, ffrt::task_attr().name("NearlinkIpShare_task").delay(delayUs));
     return true;
 }
 

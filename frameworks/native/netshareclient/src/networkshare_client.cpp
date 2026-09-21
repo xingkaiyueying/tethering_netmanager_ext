@@ -280,6 +280,24 @@ int32_t NetworkShareClient::IsNearlinkIpShareSupported(const std::string &peerAd
         proxy->IsNearlinkIpShareSupported(peerAddress, supported);
 }
 
+int32_t NetworkShareClient::QueryNearlinkIpShareCapabilities(const std::string &peerAddress, NearlinkIpShareCapabilities &capabilities)
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->QueryNearlinkIpShareCapabilities(peerAddress, capabilities);
+}
+
+int32_t NetworkShareClient::StartNearlinkGatewayWithMode(const std::string &peerAddress, int32_t mode)
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->StartNearlinkGatewayWithMode(peerAddress, mode);
+}
+
+int32_t NetworkShareClient::StartNearlinkTerminalWithMode(const std::string &peerAddress, int32_t mode)
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->StartNearlinkTerminalWithMode(peerAddress, mode);
+}
+
 int32_t NetworkShareClient::StartNearlinkGateway(const std::string &peerAddress)
 {
     auto proxy = GetProxy();

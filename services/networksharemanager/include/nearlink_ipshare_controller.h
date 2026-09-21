@@ -16,12 +16,16 @@
 #define NETMANAGER_EXT_NEARLINK_IPSHARE_CONTROLLER_H
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
 
 #include "dhcp_result_event.h"
+#include "dhcp_l3_ipv6.h"
+#include "nearlink_family_network.h"
+#include "nearlink_ipv6_runtime.h"
 #include "nearlink_ip_share_status.h"
 #include "networkshare_configuration.h"
 
@@ -38,24 +42,26 @@ class NearlinkIpShareController final : public std::enable_shared_from_this<Near
 public:
     static std::shared_ptr<NearlinkIpShareController> GetInstance();
 
+    int32_t QueryCapabilities(const std::string &peer, NearlinkIpShareCapabilities &capabilities);
     bool Init();
     void Uninit();
     int32_t IsSupported(const std::string &peerAddress, bool &supported);
-    int32_t StartGateway(const std::string &peerAddress);
+    int32_t StartGateway(const std::string &peerAddress, int32_t mode = 1);
     int32_t StopGateway();
-    int32_t StartTerminal(const std::string &gatewayAddress);
+    int32_t StartTerminal(const std::string &gatewayAddress, int32_t mode = 1);
     int32_t StopTerminal();
     int32_t GetStatus(NearlinkIpShareStatus &status) const;
     void ReplayStatus(const sptr<INearlinkIpShareEventCallback> &callback) const;
 
     void OnNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
-    void OnDhcpSuccess(int32_t status, const std::string &iface, const DhcpResult &result);
-    void OnDhcpFailure(int32_t status, const std::string &iface, const std::string &reason);
+    void OnDhcpSuccess(int32_t status, const std::string &iface, const DhcpResult &result, uint64_t session = 0);
+    void OnDhcpFailure(int32_t status, const std::string &iface, const std::string &reason, uint64_t session = 0);
     void OnUpstreamChanged();
+    void OnIpv6Addresses(const std::string &iface, const DhcpL3Ipv6Snapshot &snapshot, uint64_t session = 0);
 
 private:
     NearlinkIpShareController() = default;
-    int32_t Start(NearlinkIpShareRole role, const std::string &peerAddress);
+    int32_t Start(NearlinkIpShareRole role, const std::string &peerAddress, int32_t mode);
     int32_t Stop(NearlinkIpShareRole expectedRole);
     void HandleNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
     void ConfigureGateway();
@@ -64,6 +70,15 @@ private:
     int32_t CleanupUpstream();
     bool IsCurrentSession(uint64_t generation) const;
     void ApplyTerminalNetwork(const DhcpResult &result);
+    void ApplyIpv6Network(const DhcpResult &result);
+    bool PublishTerminalNetwork();
+    void FamilyFailure(bool ipv6, const std::string &stage, int32_t code, bool withdraw = true);
+    void ScheduleMaintenance(uint64_t generation);
+    void RefreshFamilyStatus();
+    void ValidateFamilies();
+    uint64_t networkRevision_{0};
+    bool validationInFlight_{false};
+    std::chrono::steady_clock::time_point nextValidation_{};
     bool Cleanup(bool publishIdle = true);
     void Fail(const std::string &stage, int32_t code);
     void Publish(NearlinkIpShareState state, const std::string &errorStage = {}, int32_t errorCode = 0);
@@ -76,7 +91,7 @@ private:
     bool initialized_ {false};
     bool shuttingDown_ {false};
     bool stopRequested_ {false};
-    uint64_t generation_ {0};
+    std::atomic<uint64_t> generation_ {0};
     bool gatewayReserved_ {false};
     bool nearlinkStarted_ {false};
     bool localInterfaceAdded_ {false};
@@ -94,6 +109,24 @@ private:
     int32_t upstreamNetId_ {-1};
     std::string upstreamIface_;
     NetworkShareConfiguration configuration_;
+    NearlinkFamilyNetwork families_;
+    NetLinkInfo appliedLink_;
+    bool supplierAvailable_{false};
+    NearlinkIpv6Runtime ipv6Runtime_;
+    bool ipv6Prepared_{false};
+    void ConfigureGatewayIpv6(const NetLinkInfo *upstream);
+    DhcpL3Ipv6Snapshot ipv6Addresses_ {};
+    std::chrono::steady_clock::time_point ipv6Observed_ {};
+    DhcpResult ipv6Result_ {};
+    uint64_t linkGeneration_ {0}, linkSequence_ {0}, evidenceSequence_ {0};
+    uint32_t interfaceIndex_ {0};
+    bool dualStack_ {false};
+    bool channelReady_{false};
+    bool retryIpv4_{false}, ipv6ClientStarted_{false};
+    std::chrono::steady_clock::time_point nextDhcpRetry_{};
+    std::array<uint8_t, 6> clientKey_{};
+    void RetryTerminalDhcp();
+    bool maintenancePending_ {false};
 };
 } // namespace OHOS::NetManagerStandard
 #endif // NETMANAGER_EXT_NEARLINK_IPSHARE_CONTROLLER_H

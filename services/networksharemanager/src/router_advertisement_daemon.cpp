@@ -306,6 +306,12 @@ void RouterAdvertisementDaemon::BuildNewRa(const RaParams &newRa)
     raParams_->Set(newRa);
 }
 
+bool RouterAdvertisementDaemon::AdvertiseNow()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return IsSocketValid() && !stopRaThread_ && AssembleRaLocked() && MaybeSendRa(dstIpv6Addr_);
+}
+
 void RouterAdvertisementDaemon::ResetRaRetryInterval()
 {
     std::weak_ptr<RouterAdvertisementDaemon> wp = shared_from_this();
@@ -315,7 +321,7 @@ void RouterAdvertisementDaemon::ResetRaRetryInterval()
             sp->ProcessSendRaPacket();
         }
     };
-    uint32_t delayTime = DEFAULT_RTR_INTERVAL_SEC * SECOND_TO_MICROSECOND;
+    uint32_t delayTime = (raParams_->layer3_ ? 30 : DEFAULT_RTR_INTERVAL_SEC) * SECOND_TO_MICROSECOND;
     if (sendRaTimes_ < MAX_URGENT_RTR_ADVERTISEMENTS) {
         sendRaTimes_++;
         delayTime = SEND_RA_INTERVAL;

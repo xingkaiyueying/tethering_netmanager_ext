@@ -15,6 +15,8 @@
 #include "nearlink_ipshare_client.h"
 
 #include "nearlink_ipshare_controller.h"
+#include "nearlink_family_validation.h"
+#include <thread>
 
 #include <cerrno>
 #include <algorithm>
@@ -23,6 +25,7 @@
 #include <cstring>
 #include <future>
 #include <set>
+#include <net/if.h>
 
 #include "dhcp_c_api.h"
 #include "dhcp_result_event.h"
@@ -251,17 +254,17 @@ private:
     std::weak_ptr<NearlinkIpShareController> controller_;
 };
 
-void DhcpSuccessCallback(int status, const char *ifname, DhcpResult *result)
+void DhcpSessionSuccess(uint64_t session, int status, const char *iface, const DhcpResult *result,
+    const DhcpL3Ipv6Snapshot *snapshot)
 {
-    if (ifname != nullptr && result != nullptr) {
-        NearlinkIpShareController::GetInstance()->OnDhcpSuccess(status, ifname, *result);
-    }
+    if (!iface || !result) return;
+    auto controller = NearlinkIpShareController::GetInstance();
+    if (snapshot) controller->OnIpv6Addresses(iface, *snapshot, session);
+    controller->OnDhcpSuccess(status, iface, *result, session);
 }
-
-void DhcpFailureCallback(int status, const char *ifname, const char *reason)
+void DhcpSessionFailure(uint64_t session, int status, const char *iface, const char *reason)
 {
-    NearlinkIpShareController::GetInstance()->OnDhcpFailure(status, ifname == nullptr ? "" : ifname,
-                                                            reason == nullptr ? "" : reason);
+    if (iface) NearlinkIpShareController::GetInstance()->OnDhcpFailure(status, iface, reason ? reason : "", session);
 }
 } // namespace
 
@@ -290,6 +293,13 @@ bool NearlinkIpShareController::Init()
         return false;
     }
     initialized_ = true;
+    auto self = shared_from_this();
+    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, generation = generation_.load()]() {
+        if (!self->IsCurrentSession(generation)) return;
+        OHOS::Nearlink::NearlinkIpShareStatus snapshot;
+        if (OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(snapshot) == 0)
+            self->HandleNearlinkStatus(snapshot);
+    });
     NETMGR_EXT_LOG_I("[NearlinkIpShare][Init] controller ready; observer registration refreshed");
     return true;
 }
@@ -367,20 +377,42 @@ int32_t NearlinkIpShareController::IsSupported(const std::string &peerAddress, b
     return ret;
 }
 
-int32_t NearlinkIpShareController::StartGateway(const std::string &peerAddress)
-{
-    return Start(NearlinkIpShareRole::GATEWAY, peerAddress);
-}
-
-int32_t NearlinkIpShareController::StartTerminal(const std::string &gatewayAddress)
-{
-    return Start(NearlinkIpShareRole::TERMINAL, gatewayAddress);
-}
-
-int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::string &peerAddress)
+int32_t NearlinkIpShareController::QueryCapabilities(const std::string &peer, NearlinkIpShareCapabilities &capabilities)
 {
     std::array<uint8_t, 6> bytes{};
-    if (!ParsePeerAddress(peerAddress, bytes)) {
+    if (!ParsePeerAddress(peer, bytes)) return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
+    if (!Init()) return NETMANAGER_EXT_ERR_OPERATION_FAILED;
+    auto done = std::make_shared<std::promise<int32_t>>();
+    auto future = done->get_future();
+    auto value = std::make_shared<OHOS::Nearlink::NearlinkIpShareCapabilities>();
+    if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([peer, done, value]() {
+        done->set_value(OHOS::Nearlink::NearlinkIpShareClient::GetInstance().QueryNearlinkIpShareCapabilities(peer, *value));
+    })) return NETMANAGER_EXT_ERR_OPERATION_FAILED;
+    int32_t ret = future.get();
+    if (ret == 0) {
+        capabilities.identifierPresent = value->identifierPresent;
+        capabilities.discoveryState = value->discoveryState;
+        capabilities.localModes = value->localModes;
+        capabilities.peerModes = value->peerModes;
+        capabilities.peerCapabilityKnown = value->peerCapabilityKnown;
+    }
+    return ret;
+}
+
+int32_t NearlinkIpShareController::StartGateway(const std::string &peerAddress, int32_t mode)
+{
+    return Start(NearlinkIpShareRole::GATEWAY, peerAddress, mode);
+}
+
+int32_t NearlinkIpShareController::StartTerminal(const std::string &gatewayAddress, int32_t mode)
+{
+    return Start(NearlinkIpShareRole::TERMINAL, gatewayAddress, mode);
+}
+
+int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::string &peerAddress, int32_t mode)
+{
+    std::array<uint8_t, 6> bytes{};
+    if ((mode != 1 && mode != 3) || !ParsePeerAddress(peerAddress, bytes)) {
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Start] role=%{public}d invalid peer address", static_cast<int32_t>(role));
         return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
     }
@@ -396,7 +428,7 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
             return NETMANAGER_EXT_ERR_OPERATION_FAILED;
         }
         if (status_.role != NearlinkIpShareRole::NONE) {
-            if (status_.role == role && status_.peerAddress == peerAddress && !stopRequested_ &&
+            if (status_.role == role && status_.peerAddress == peerAddress && status_.requestedMode == mode && !stopRequested_ &&
                 status_.state != NearlinkIpShareState::ERROR) {
                 auto snapshot = status_;
                 NetworkShareTracker::GetInstance().SubmitNearlinkTask(
@@ -414,6 +446,11 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
             gatewayReserved_ = true;
         }
         ++generation_;
+        status_.requestedMode = mode;
+        linkGeneration_ = linkSequence_ = evidenceSequence_ = 0;
+        dualStack_ = false; channelReady_ = false;
+        families_ = NearlinkFamilyNetwork{};
+        ipv6Addresses_ = DhcpL3Ipv6Snapshot{};
         stopRequested_ = false;
         status_.state = NearlinkIpShareState::STARTING;
         status_.role = role;
@@ -425,11 +462,11 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
         status_.errorCode = 0;
     }
     auto self = shared_from_this();
-    if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, role, peerAddress]() {
+    if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, role, peerAddress, mode]() {
             self->Publish(NearlinkIpShareState::STARTING);
             int32_t ret = role == NearlinkIpShareRole::GATEWAY
-                              ? OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartGateway(peerAddress)
-                              : OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartTerminal(peerAddress);
+                              ? OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartNearlinkGatewayWithMode(peerAddress, mode)
+                              : OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartNearlinkTerminalWithMode(peerAddress, mode);
             NETMGR_EXT_LOG_I("[NearlinkIpShare][Start] role=%{public}d peer=%{public}s accepted=%{public}d",
                              static_cast<int32_t>(role), MaskPeer(peerAddress).c_str(), ret);
             if (ret != 0) {
@@ -515,9 +552,11 @@ void NearlinkIpShareController::OnNearlinkStatus(const OHOS::Nearlink::NearlinkI
 {
     std::lock_guard lock(mutex_);
     auto self = shared_from_this();
-    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, status, generation = generation_]() {
+    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, status, generation = generation_.load()]() {
         if (self->IsCurrentSession(generation)) {
-            self->HandleNearlinkStatus(status);
+            OHOS::Nearlink::NearlinkIpShareStatus current;
+            if (OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current) == 0 &&
+                current.generation == status.generation) self->HandleNearlinkStatus(status);
         }
     });
 }
@@ -541,7 +580,30 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
         if (!status.ifaceName.empty() && status.ifaceName != IFACE_NAME) {
             return;
         }
+        if (status.generation < linkGeneration_ ||
+            (status.generation == linkGeneration_ && status.sequence <= linkSequence_)) return;
+        // A different live generation needs an explicit stop/restart; never graft old L3 resources onto it.
+        if (linkGeneration_ != 0 && status.generation != linkGeneration_) {
+            if (role != NearlinkIpShareRole::GATEWAY || interfaceIndex_ != if_nametoindex(IFACE_NAME)) return;
+            // Peer release resets the gateway binding while keeping its TUN and local services alive.
+            evidenceSequence_ = 0;
+        }
+        linkGeneration_ = status.generation;
+        linkSequence_ = status.sequence;
+        status_.contextId = status.contextId;
+        status_.generation = status.generation;
+        status_.selectedMode = static_cast<int32_t>(status.selectedMode);
+        status_.serviceReady = status.serviceReady;
+        dualStack_ = status_.selectedMode == 3;
+        if (status.state == OHOS::Nearlink::NearlinkIpShareState::CHANNEL_READY) channelReady_ = true;
+        if (status_.selectedMode == 0) channelReady_ = false;
         status_.ifaceName = status.ifaceName;
+    }
+    if (!dualStack_ && static_cast<int32_t>(status.selectedMode) == 1 && ipv6Prepared_) {
+        if (ipv6Runtime_.Cleanup()) {
+            ipv6Prepared_ = false;
+            std::lock_guard lock(mutex_); status_.ipv6 = NearlinkIpShareFamilyStatus{};
+        }
     }
     NETMGR_EXT_LOG_I("[NearlinkIpShare][NearLink] role=%{public}d state=%{public}d peer=%{public}s iface=%{public}s",
                      static_cast<int32_t>(role), static_cast<int32_t>(status.state),
@@ -550,8 +612,13 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
         Fail(status.errorStage.empty() ? "LINK" : status.errorStage, status.errorCode);
         return;
     }
-    if (role == NearlinkIpShareRole::GATEWAY && status.state == OHOS::Nearlink::NearlinkIpShareState::IFACE_READY) {
+    if (role == NearlinkIpShareRole::GATEWAY &&
+        (status.state == OHOS::Nearlink::NearlinkIpShareState::IFACE_READY ||
+         status.state == OHOS::Nearlink::NearlinkIpShareState::CHANNEL_READY)) {
+        interfaceIndex_ = if_nametoindex(IFACE_NAME);
         ConfigureGateway();
+        ConfigureUpstream();
+        if (!maintenancePending_) { maintenancePending_ = true; ScheduleMaintenance(generation_); }
         return;
     }
     if (role == NearlinkIpShareRole::TERMINAL && status.state == OHOS::Nearlink::NearlinkIpShareState::CHANNEL_READY) {
@@ -567,90 +634,71 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
 
 void NearlinkIpShareController::ConfigureGateway()
 {
-    if (addressConfigured_) {
-        return;
+    const std::string &gateway = configuration_.GetNearlinkIpv4Addr();
+    if (!localInterfaceAdded_) {
+        int32_t ret = NetsysController::GetInstance().NetworkAddInterface(IP_SHARE_LOCAL_NET_ID, IFACE_NAME);
+        if (ret != NETSYS_SUCCESS) { Fail("ROUTE", ret); return; }
+        localInterfaceAdded_ = true;
     }
-    Publish(NearlinkIpShareState::CONFIGURING);
-    const std::string &gatewayAddress = configuration_.GetNearlinkIpv4Addr();
-    const std::string &poolStart = configuration_.GetNearlinkDhcpStart();
-    const std::string &poolEnd = configuration_.GetNearlinkDhcpEnd();
-    if (gatewayAddress != "192.168.77.1" || poolStart != "192.168.77.2" || poolEnd != "192.168.77.20") {
-        Fail("INTERNAL", NETMANAGER_EXT_ERR_OPERATION_FAILED);
-        return;
-    }
-    int32_t ret = NetsysController::GetInstance().AddInterfaceAddress(IFACE_NAME, gatewayAddress, PREFIX_LENGTH);
-    if (ret != NETSYS_SUCCESS) {
-        Fail("TUN", ret);
-        return;
-    }
-    addressConfigured_ = true;
-    NETMGR_EXT_LOG_I("[NearlinkIpShare][Gateway] interface=%{public}s address configured prefix=%{public}d", IFACE_NAME,
-                     PREFIX_LENGTH);
-
-    ret = NetsysController::GetInstance().NetworkAddInterface(IP_SHARE_LOCAL_NET_ID, IFACE_NAME);
-    if (ret != NETSYS_SUCCESS) {
-        Fail("ROUTE", ret);
-        return;
-    }
-    localInterfaceAdded_ = true;
-    ret = NetsysController::GetInstance().NetworkAddRoute(IP_SHARE_LOCAL_NET_ID, IFACE_NAME, LOCAL_SUBNET,
-                                                          DIRECT_NEXT_HOP);
-    if (ret != NETSYS_SUCCESS) {
-        Fail("ROUTE", ret);
-        return;
-    }
-    localRouteAdded_ = true;
-
-    DhcpRange range{};
-    range.iptype = DHCP_IPV4;
-    range.leaseHours = 6;
-    if (strcpy_s(range.strTagName, sizeof(range.strTagName), IFACE_NAME) != EOK ||
-        strcpy_s(range.strStartip, sizeof(range.strStartip), poolStart.c_str()) != EOK ||
-        strcpy_s(range.strEndip, sizeof(range.strEndip), poolEnd.c_str()) != EOK ||
-        strcpy_s(range.strSubnet, sizeof(range.strSubnet), SUBNET_MASK) != EOK) {
-        Fail("DHCP", NETMANAGER_EXT_ERR_OPERATION_FAILED);
-        return;
-    }
-    ret = SetDhcpRange(IFACE_NAME, &range);
-    if (ret != DHCP_SUCCESS || (ret = StartDhcpServer(IFACE_NAME)) != DHCP_SUCCESS) {
-        Fail("DHCP", ret);
-        return;
-    }
-    dhcpServerStarted_ = true;
-    NETMGR_EXT_LOG_I("[NearlinkIpShare][Gateway] DHCP interface=%{public}s pool configured and server started",
-                     IFACE_NAME);
-
-    ret = NetsysController::GetInstance().StartDnsProxyListen();
-    if (ret != NETSYS_SUCCESS) {
-        Fail("DNS", ret);
-        return;
-    }
-    dnsProxyStarted_ = true;
-
-    upstreamCallback_ = new (std::nothrow) UpstreamCallback();
-    if (upstreamCallback_ == nullptr) {
-        Fail("UPSTREAM", NETMANAGER_EXT_ERR_LOCAL_PTR_NULL);
-        return;
-    }
-    ret = NetConnClient::GetInstance().RegisterNetConnCallback(upstreamCallback_);
-    if (ret != NETMANAGER_SUCCESS) {
-        upstreamCallback_ = nullptr;
-        Fail("UPSTREAM", ret);
-        return;
-    }
+    auto configureV4 = [&]() -> int32_t {
+        if (gateway != "192.168.77.1" || configuration_.GetNearlinkDhcpStart() != "192.168.77.2" ||
+            configuration_.GetNearlinkDhcpEnd() != "192.168.77.20") return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
+        int32_t ret;
+        if (!addressConfigured_) {
+            ret = NetsysController::GetInstance().AddInterfaceAddress(IFACE_NAME, gateway, PREFIX_LENGTH);
+            if (ret != NETSYS_SUCCESS) return ret;
+            addressConfigured_ = true;
+        }
+        if (!localRouteAdded_) {
+            ret = NetsysController::GetInstance().NetworkAddRoute(IP_SHARE_LOCAL_NET_ID, IFACE_NAME,
+                LOCAL_SUBNET, DIRECT_NEXT_HOP);
+            if (ret != NETSYS_SUCCESS) return ret;
+            localRouteAdded_ = true;
+        }
+        if (!dhcpServerStarted_) {
+            DhcpRange range{}; range.iptype = DHCP_IPV4; range.leaseHours = 6;
+            if (strcpy_s(range.strTagName, sizeof(range.strTagName), IFACE_NAME) != EOK ||
+                strcpy_s(range.strStartip, sizeof(range.strStartip), configuration_.GetNearlinkDhcpStart().c_str()) != EOK ||
+                strcpy_s(range.strEndip, sizeof(range.strEndip), configuration_.GetNearlinkDhcpEnd().c_str()) != EOK ||
+                strcpy_s(range.strSubnet, sizeof(range.strSubnet), SUBNET_MASK) != EOK)
+                return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
+            ret = SetDhcpRange(IFACE_NAME, &range);
+            if (ret != DHCP_SUCCESS || (ret = StartDhcpServer(IFACE_NAME)) != DHCP_SUCCESS) return ret;
+            dhcpServerStarted_ = true;
+        }
+        if (!dnsProxyStarted_) {
+            ret = NetsysController::GetInstance().StartDnsProxyListen();
+            if (ret != NETSYS_SUCCESS) return ret;
+            dnsProxyStarted_ = true;
+        }
+        return 0;
+    };
+    int32_t ret = configureV4();
     {
         std::lock_guard lock(mutex_);
+        status_.ipv4.phase = ret == 0 ? 2 : 3;
+        status_.ipv4.configurationAvailable = ret == 0;
+        status_.ipv4.externalAvailable = false;
+        status_.ipv4.hasError = ret != 0;
+        status_.ipv4.error.plane = 4; status_.ipv4.error.family = 1;
+        status_.ipv4.error.stage = "DHCP"; status_.ipv4.error.code = ret; status_.ipv4.error.retryable = true;
+        status_.ipv4Address = addressConfigured_ ? gateway : "";
+        status_.serviceReady = dhcpServerStarted_;
         status_.ifaceName = IFACE_NAME;
-        status_.ipv4Address = gatewayAddress;
     }
-    ConfigureUpstream();
+    if (!upstreamCallback_) {
+        upstreamCallback_ = new (std::nothrow) UpstreamCallback();
+        if (upstreamCallback_ && NetConnClient::GetInstance().RegisterNetConnCallback(upstreamCallback_) != 0)
+            upstreamCallback_ = nullptr;
+        // The maintenance task also rechecks the default upstream and retries registration.
+    }
 }
 
 void NearlinkIpShareController::OnUpstreamChanged()
 {
     std::lock_guard lock(mutex_);
     auto self = shared_from_this();
-    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, generation = generation_]() {
+    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, generation = generation_.load()]() {
         if (self->IsCurrentSession(generation) && self->dhcpServerStarted_) {
             self->ConfigureUpstream();
         }
@@ -659,70 +707,80 @@ void NearlinkIpShareController::OnUpstreamChanged()
 
 void NearlinkIpShareController::ConfigureUpstream()
 {
+    if (!localInterfaceAdded_) return;
     NetHandle upstream;
-    sptr<NetLinkInfo> linkInfo = sptr<NetLinkInfo>::MakeSptr();
-    int32_t ret = NetConnClient::GetInstance().GetDefaultNet(upstream);
-    if (ret != NETMANAGER_SUCCESS || upstream.GetNetId() < 0 || linkInfo == nullptr ||
-        NetConnClient::GetInstance().GetConnectionProperties(upstream, *linkInfo) != NETMANAGER_SUCCESS ||
-        linkInfo->ifaceName_.empty() || linkInfo->ifaceName_ == IFACE_NAME) {
-        ret = CleanupUpstream();
-        if (ret != NETSYS_SUCCESS) {
-            Fail("UPSTREAM", ret);
-            return;
+    auto link = sptr<NetLinkInfo>::MakeSptr();
+    bool present = link && NetConnClient::GetInstance().GetDefaultNet(upstream) == NETMANAGER_SUCCESS &&
+        upstream.GetNetId() >= 0 && NetConnClient::GetInstance().GetConnectionProperties(upstream, *link) == 0 &&
+        !link->ifaceName_.empty() && link->ifaceName_ != IFACE_NAME;
+    if (!present || (upstreamNetId_ >= 0 &&
+        (upstreamNetId_ != upstream.GetNetId() || upstreamIface_ != link->ifaceName_))) {
+        int32_t ret = CleanupUpstream();
+        if (ret != 0) {
+            ConfigureGatewayIpv6(nullptr);
+            Publish(NearlinkIpShareState::SERVING_NO_UPSTREAM, "UPSTREAM", ret); return;
         }
-        NETMGR_EXT_LOG_I("[NearlinkIpShare][Gateway] no upstream; local DHCP remains available");
-        {
-            std::lock_guard lock(mutex_);
-            status_.ifaceName = IFACE_NAME;
-            status_.ipv4Address = configuration_.GetNearlinkIpv4Addr();
-            status_.hasUpstream = false;
-        }
-        Publish(NearlinkIpShareState::SERVING_NO_UPSTREAM);
-        return;
     }
-
-    if (natEnabled_ && upstreamIface_ == linkInfo->ifaceName_ && upstreamNetId_ == upstream.GetNetId()) {
-        return;
+    if (!present) {
+        { std::lock_guard lock(mutex_); status_.hasUpstream = false; }
+        ConfigureGatewayIpv6(nullptr);
+        Publish(NearlinkIpShareState::SERVING_NO_UPSTREAM); return;
     }
-    ret = CleanupUpstream();
-    if (ret != NETSYS_SUCCESS) {
-        Fail("UPSTREAM", ret);
-        return;
+    upstreamNetId_ = upstream.GetNetId(); upstreamIface_ = link->ifaceName_;
+    int32_t dnsRet = dnsProxyStarted_ ? NetsysController::GetInstance().ShareDnsSet(upstreamNetId_) : -1;
+    int32_t ret = 0;
+    if (!forwardingEnabled_) {
+        ret = NetsysController::GetInstance().IpEnableForwarding(FORWARDING_REQUESTER);
+        forwardingEnabled_ = ret == 0;
     }
-    upstreamIface_ = linkInfo->ifaceName_;
-    upstreamNetId_ = upstream.GetNetId();
-    ret = NetsysController::GetInstance().ShareDnsSet(upstream.GetNetId());
-    if (ret != NETSYS_SUCCESS) {
-        Fail("DNS", ret);
-        return;
+    if (forwardingEnabled_ && !interfaceForwarding_) {
+        ret = NetsysController::GetInstance().IpfwdAddInterfaceForward(IFACE_NAME, upstreamIface_);
+        interfaceForwarding_ = ret == 0;
     }
-    ret = NetsysController::GetInstance().IpEnableForwarding(FORWARDING_REQUESTER);
-    if (ret != NETSYS_SUCCESS) {
-        Fail("UPSTREAM", ret);
-        return;
+    bool hasV4Route = std::any_of(link->routeList_.begin(), link->routeList_.end(), [](const auto &route) {
+        return route.destination_.family_ == AF_INET && route.destination_.prefixlen_ == 0;
+    });
+    if (interfaceForwarding_ && hasV4Route && !natEnabled_) {
+        ret = NetsysController::GetInstance().EnableNat(IFACE_NAME, upstreamIface_);
+        natEnabled_ = ret == 0;
+    } else if (!hasV4Route && natEnabled_) {
+        ret = NetsysController::GetInstance().DisableNat(IFACE_NAME, upstreamIface_);
+        if (ret == 0) natEnabled_ = false;
     }
-    forwardingEnabled_ = true;
-    ret = NetsysController::GetInstance().IpfwdAddInterfaceForward(IFACE_NAME, upstreamIface_);
-    if (ret != NETSYS_SUCCESS) {
-        Fail("NAT", ret);
-        return;
-    }
-    interfaceForwarding_ = true;
-    ret = NetsysController::GetInstance().EnableNat(IFACE_NAME, upstreamIface_);
-    if (ret != NETSYS_SUCCESS) {
-        Fail("NAT", ret);
-        return;
-    }
-    natEnabled_ = true;
+    ConfigureGatewayIpv6(&*link);
     {
         std::lock_guard lock(mutex_);
-        status_.ifaceName = IFACE_NAME;
-        status_.ipv4Address = configuration_.GetNearlinkIpv4Addr();
-        status_.hasUpstream = true;
+        status_.hasUpstream = interfaceForwarding_ && forwardingEnabled_;
+        if (dnsRet != 0 || (hasV4Route && !natEnabled_)) {
+            status_.ipv4.hasError = true; status_.ipv4.error.plane = 4; status_.ipv4.error.family = 1;
+            status_.ipv4.error.stage = dnsRet != 0 ? "DNS" : "NAT";
+            status_.ipv4.error.code = dnsRet != 0 ? dnsRet : ret; status_.ipv4.error.retryable = true;
+        }
     }
-    NETMGR_EXT_LOG_I("[NearlinkIpShare][Gateway] DNS/forwarding/NAT ready down=%{public}s up=%{public}s", IFACE_NAME,
-                     upstreamIface_.c_str());
-    Publish(NearlinkIpShareState::SERVING);
+    Publish(interfaceForwarding_ ? NearlinkIpShareState::SERVING : NearlinkIpShareState::SERVING_NO_UPSTREAM);
+}
+
+void NearlinkIpShareController::ConfigureGatewayIpv6(const NetLinkInfo *upstream)
+{
+    if (!dualStack_ || !channelReady_) return;
+    if (!ipv6Prepared_) {
+        std::string local;
+        int32_t ret = OHOS::Nearlink::NearlinkHost::GetInstance().GetLocalAddress(local);
+        ipv6Prepared_ = ret == 0 && ipv6Runtime_.Prepare(true, local);
+    }
+    bool ready = ipv6Prepared_ && ipv6Runtime_.Advertise(upstream, interfaceForwarding_ && forwardingEnabled_);
+    std::lock_guard lock(mutex_);
+    status_.serviceReady = dhcpServerStarted_ || ready;
+    status_.ipv6.phase = ready ? 2 : 3;
+    status_.ipv6.configurationAvailable = ready;
+    status_.ipv6.externalAvailable = false;
+    status_.ipv6.validation = 0;
+    status_.ipv6.hasError = !ready;
+    if (!ready) {
+        status_.ipv6.error.plane = 4; status_.ipv6.error.family = 2;
+        status_.ipv6.error.stage = "PREFIX"; status_.ipv6.error.retryable = true;
+        status_.ipv6.error.code = NETMANAGER_EXT_ERR_OPERATION_FAILED;
+    }
 }
 
 void NearlinkIpShareController::StartTerminalDhcp()
@@ -743,113 +801,419 @@ void NearlinkIpShareController::StartTerminalDhcp()
         return;
     }
     Publish(NearlinkIpShareState::DHCP);
-    static const ClientCallBack callback{DhcpSuccessCallback, DhcpFailureCallback};
-    int32_t ret = RegisterDhcpClientCallBack(IFACE_NAME, &callback);
-    if (ret != DHCP_SUCCESS) {
-        Fail("DHCP", ret);
-        return;
-    }
-    RouterConfig config{};
-    if (strcpy_s(config.ifname, sizeof(config.ifname), IFACE_NAME) != EOK) {
-        Fail("DHCP", NETMANAGER_EXT_ERR_OPERATION_FAILED);
-        return;
-    }
-    config.bIpv6 = false;
-    config.bIpv4 = true;
-    config.prohibitUseCacheIp = true;
-    ret = StartDhcpClientL3(&config, clientKey.data(), clientKey.size());
-    if (ret != DHCP_SUCCESS) {
-        Fail("DHCP", ret);
-        return;
+    clientKey_ = clientKey;
+    interfaceIndex_ = if_nametoindex(IFACE_NAME);
+    int32_t ret = RegisterDhcpClientL3Session(IFACE_NAME, generation_, DhcpSessionSuccess, DhcpSessionFailure);
+    if (ret != DHCP_SUCCESS) { Fail("DHCP", ret); return; }
+    if (dualStack_) {
+        ipv6Prepared_ = ipv6Runtime_.Prepare(false, localAddress);
+        if (!ipv6Prepared_) FamilyFailure(true, "IPV6_CONTROL", NETMANAGER_EXT_ERR_OPERATION_FAILED);
     }
     dhcpClientStarted_ = true;
+    retryIpv4_ = true; ipv6ClientStarted_ = false;
+    nextDhcpRetry_ = std::chrono::steady_clock::time_point{};
+    RetryTerminalDhcp();
+    if (!maintenancePending_) { maintenancePending_ = true; ScheduleMaintenance(generation_); }
     NETMGR_EXT_LOG_I("[NearlinkIpShare][Terminal] DHCP L3_TUN started interface=%{public}s", IFACE_NAME);
 }
 
-void NearlinkIpShareController::OnDhcpSuccess(int32_t status, const std::string &iface, const DhcpResult &result)
+void NearlinkIpShareController::RetryTerminalDhcp()
+{
+    auto now = std::chrono::steady_clock::now();
+    if (now < nextDhcpRetry_) return;
+    nextDhcpRetry_ = now + std::chrono::seconds(30);
+    RouterConfig config{};
+    if (strcpy_s(config.ifname, sizeof(config.ifname), IFACE_NAME) != EOK) return;
+    config.prohibitUseCacheIp = true;
+    // Separate starts prevent an IPv6 startup error from skipping DHCPv4, and vice versa.
+    if (dualStack_ && !ipv6ClientStarted_) {
+        if (!ipv6Prepared_) {
+            std::string local;
+            if (OHOS::Nearlink::NearlinkHost::GetInstance().GetLocalAddress(local) == 0)
+                ipv6Prepared_ = ipv6Runtime_.Prepare(false, local);
+        }
+        if (ipv6Prepared_) {
+            config.bIpv6 = true; config.bIpv4 = false;
+            int32_t ret = StartDhcpClientL3(&config, clientKey_.data(), clientKey_.size());
+            ipv6ClientStarted_ = ret == DHCP_SUCCESS;
+            if (ret != DHCP_SUCCESS) FamilyFailure(true, "IPV6_CONTROL", ret);
+        }
+    }
+    if (retryIpv4_) {
+        config.bIpv6 = false; config.bIpv4 = true;
+        int32_t ret = StartDhcpClientL3(&config, clientKey_.data(), clientKey_.size());
+        retryIpv4_ = ret != DHCP_SUCCESS;
+        if (ret != DHCP_SUCCESS) FamilyFailure(false, "DHCP", ret);
+    }
+}
+
+void NearlinkIpShareController::OnDhcpSuccess(int32_t status, const std::string &iface, const DhcpResult &result, uint64_t session)
 {
     NETMGR_EXT_LOG_I("[NearlinkIpShare][DHCP] async success callback interface=%{public}s code=%{public}d",
                      iface.c_str(), status);
     std::lock_guard lock(mutex_);
+    if (session != 0 && session != generation_) return;
     auto self = shared_from_this();
-    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, status, iface, result, generation = generation_]() {
+    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, status, iface, result, generation = generation_.load()]() {
         if (!self->IsCurrentSession(generation) || !self->dhcpClientStarted_ || iface != IFACE_NAME) {
             return;
         }
+        if (result.iptype == 1) {
+            if (self->dualStack_) self->ApplyIpv6Network(result);
+            return;
+        }
         if (status != DHCP_SUCCESS || !ValidLease(result)) {
-            self->Fail("DHCP", status == DHCP_SUCCESS ? NETMANAGER_EXT_ERR_PARAMETER_ERROR : status);
+            self->FamilyFailure(false, "DHCP", status == DHCP_SUCCESS ? NETMANAGER_EXT_ERR_PARAMETER_ERROR : status);
             return;
         }
         self->ApplyTerminalNetwork(result);
     });
 }
 
-void NearlinkIpShareController::OnDhcpFailure(int32_t status, const std::string &iface, const std::string &reason)
+void NearlinkIpShareController::OnDhcpFailure(int32_t status, const std::string &iface, const std::string &reason, uint64_t session)
 {
     (void)reason;
     NETMGR_EXT_LOG_E("[NearlinkIpShare][DHCP] async failure callback interface=%{public}s code=%{public}d",
                      iface.c_str(), status);
     std::lock_guard lock(mutex_);
+    if (session != 0 && session != generation_) return;
     auto self = shared_from_this();
-    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, status, iface, generation = generation_]() {
+    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, status, iface, generation = generation_.load()]() {
         if (self->IsCurrentSession(generation) && self->dhcpClientStarted_ && iface == IFACE_NAME) {
             if ((status == DHCP_RENEW_FAILED || status == DHCP_RENEW_TIMEOUT) && self->netSupplierId_ != 0 &&
                 std::chrono::steady_clock::now() < self->leaseExpiry_) {
                 NETMGR_EXT_LOG_I("[NearlinkIpShare][DHCP] temporary renewal failure; valid lease retained");
                 return;
             }
-            self->Fail("DHCP", status);
+            if (status & 0x10000) {
+                if (!NearlinkFamilyNetwork::Available(self->families_.ipv6))
+                    self->FamilyFailure(true, "IPV6_CONTROL", status & 0xffff);
+            } else {
+                self->retryIpv4_ = true;
+                self->nextDhcpRetry_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                self->FamilyFailure(false, "DHCP", status);
+            }
         }
     });
 }
 
 void NearlinkIpShareController::ApplyTerminalNetwork(const DhcpResult &result)
 {
-    std::set<NetCap> caps{NET_CAPABILITY_INTERNET, NET_CAPABILITY_NOT_VPN};
+    retryIpv4_ = false;
+    auto previous = families_.ipv4;
+    families_.ipv4 = NetLinkInfo{};
+    PopulateTerminalLink(result, families_.ipv4);
+    if (!PublishTerminalNetwork()) {
+        families_.ipv4 = previous;
+        FamilyFailure(false, "ROUTE", NETMANAGER_EXT_ERR_OPERATION_FAILED, false);
+        return;
+    }
+    { std::lock_guard lock(mutex_); status_.ipv4.hasError = false; }
+    leaseExpiry_ = families_.leaseExpiry = std::chrono::steady_clock::now() + std::chrono::seconds(result.uOptLeasetime);
+    RefreshFamilyStatus();
+}
+
+bool NearlinkIpShareController::PublishTerminalNetwork()
+{
+    bool created = netSupplierId_ == 0;
+    if (created && NetConnClient::GetInstance().RegisterNetSupplier(BEARER_BLUETOOTH, IFACE_NAME,
+        {NET_CAPABILITY_INTERNET, NET_CAPABILITY_NOT_VPN}, netSupplierId_) != NETMANAGER_SUCCESS) return false;
+    auto link = sptr<NetLinkInfo>::MakeSptr(families_.Aggregate());
+    auto supplier = sptr<NetSupplierInfo>::MakeSptr();
+    if (!link || !supplier) return false;
+    // Supplier availability tracks the live shared interface, not an individual DHCP/DNS result.
+    // Dropping it for a DNS timeout would destroy the network and its other kernel-managed addresses.
+    supplier->isAvailable_ = true;
+    supplier->score_ = NETWORK_SCORE;
+    if (!created && supplierAvailable_ == supplier->isAvailable_ && appliedLink_ == *link) return true;
+    // NetConn creates the physical network when supplier availability becomes true.
+    // Install link resources only after that step; on failure restore the previous aggregate.
     int32_t ret = NETMANAGER_SUCCESS;
-    if (netSupplierId_ == 0) {
-        ret = NetConnClient::GetInstance().RegisterNetSupplier(BEARER_BLUETOOTH, IFACE_NAME, caps, netSupplierId_);
-    }
+    if (supplier->isAvailable_ && !supplierAvailable_)
+        ret = NetConnClient::GetInstance().UpdateNetSupplierInfo(netSupplierId_, supplier);
+    if (ret == NETMANAGER_SUCCESS) ret = NetConnClient::GetInstance().UpdateNetLinkInfo(netSupplierId_, link);
+    if (ret == NETMANAGER_SUCCESS)
+        ret = NetConnClient::GetInstance().UpdateNetSupplierInfo(netSupplierId_, supplier);
     if (ret != NETMANAGER_SUCCESS) {
-        Fail("ROUTE", ret);
-        return;
+        if (created) {
+            if (NetConnClient::GetInstance().UnregisterNetSupplier(netSupplierId_) == NETMANAGER_SUCCESS)
+                netSupplierId_ = 0;
+        } else {
+            auto restore = sptr<NetLinkInfo>::MakeSptr(appliedLink_);
+            auto previous = sptr<NetSupplierInfo>::MakeSptr();
+            if (restore && previous) {
+                previous->isAvailable_ = supplierAvailable_; previous->score_ = NETWORK_SCORE;
+                (void)NetConnClient::GetInstance().UpdateNetLinkInfo(netSupplierId_, restore);
+                (void)NetConnClient::GetInstance().UpdateNetSupplierInfo(netSupplierId_, previous);
+            }
+        }
+        return false;
     }
-    sptr<NetLinkInfo> linkInfo = sptr<NetLinkInfo>::MakeSptr();
-    if (linkInfo == nullptr) {
-        Fail("INTERNAL", NETMANAGER_EXT_ERR_LOCAL_PTR_NULL);
-        return;
+    appliedLink_ = *link;
+    ++networkRevision_; nextValidation_ = std::chrono::steady_clock::time_point{};
+    { std::lock_guard lock(mutex_);
+      status_.ipv4.externalAvailable = status_.ipv6.externalAvailable = false;
+      status_.ipv4.validation = status_.ipv6.validation = 0; }
+    supplierAvailable_ = supplier->isAvailable_;
+    std::list<int32_t> ids;
+    if (NetConnClient::GetInstance().GetNetIdByIdentifier(IFACE_NAME, ids) == NETMANAGER_SUCCESS && ids.size() == 1) {
+        std::lock_guard lock(mutex_); status_.netId = ids.front();
     }
-    PopulateTerminalLink(result, *linkInfo);
-    sptr<NetSupplierInfo> supplierInfo = sptr<NetSupplierInfo>::MakeSptr();
-    if (supplierInfo == nullptr) {
-        Fail("INTERNAL", NETMANAGER_EXT_ERR_LOCAL_PTR_NULL);
-        return;
+    return true;
+}
+
+void NearlinkIpShareController::OnIpv6Addresses(const std::string &iface, const DhcpL3Ipv6Snapshot &snapshot, uint64_t session)
+{
+    if (iface != IFACE_NAME || snapshot.addressCount > DHCP_L3_IPV6_MAX_ADDRESSES) return;
+    std::lock_guard lock(mutex_);
+    if (session != 0 && session != generation_) return;
+    auto self = shared_from_this();
+    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, snapshot, generation = generation_.load()]() {
+        if (!self->IsCurrentSession(generation) || !self->dhcpClientStarted_ || !self->dualStack_) return;
+        for (uint32_t i = 0; i < snapshot.addressCount; ++i) {
+            const auto &a = snapshot.addresses[i];
+            in6_addr parsed{};
+            if (!memchr(a.address, 0, sizeof(a.address)) || inet_pton(AF_INET6, a.address, &parsed) != 1 ||
+                a.ifindex != self->interfaceIndex_ || a.prefixLength > 128 ||
+                a.preferredLifetime > a.validLifetime) return;
+        }
+        // Withdraw records missing from this complete snapshot before submitting new evidence.
+        auto submit = [self](const DhcpL3Ipv6Address &a, bool removed) {
+            OHOS::Nearlink::NearlinkIpShareAddressEvidence evidence;
+            evidence.generation = self->linkGeneration_;
+            evidence.sequence = ++self->evidenceSequence_;
+            evidence.address = a.address; evidence.ifindex = a.ifindex;
+            evidence.prefixLength = a.prefixLength; evidence.flags = a.flags;
+            evidence.preferredLifetime = removed ? 0 : a.preferredLifetime;
+            evidence.validLifetime = removed ? 0 : a.validLifetime;
+            return OHOS::Nearlink::NearlinkIpShareClient::GetInstance().UpdateValidatedAddress(evidence);
+        };
+        for (uint32_t i = 0; i < self->ipv6Addresses_.addressCount; ++i) {
+            const auto &old = self->ipv6Addresses_.addresses[i];
+            bool found = false;
+            for (uint32_t j = 0; j < snapshot.addressCount; ++j)
+                found = found || strcmp(old.address, snapshot.addresses[j].address) == 0;
+            if (!found && submit(old, true) != 0) {
+                self->FamilyFailure(true, "IPV6_CONTROL", NETMANAGER_EXT_ERR_OPERATION_FAILED); return;
+            }
+        }
+        auto accepted = snapshot;
+        for (uint32_t i = 0; i < snapshot.addressCount; ++i) {
+            // IPC runs on our worker, never nested under the DHCP Binder caller identity.
+            if (submit(snapshot.addresses[i], false) != 0) accepted.addresses[i].validLifetime = 0;
+        }
+        self->ipv6Addresses_ = accepted;
+        self->ipv6Observed_ = std::chrono::steady_clock::now();
+    });
+}
+
+void NearlinkIpShareController::ApplyIpv6Network(const DhcpResult &result)
+{
+    if (!memchr(result.strOptRouter1, 0, sizeof(result.strOptRouter1)) ||
+        result.dnsList.dnsNumber > DHCP_DNS_MAX_NUMBER) {
+        FamilyFailure(true, "IPV6_CONTROL", NETMANAGER_EXT_ERR_PARAMETER_ERROR); return;
     }
-    supplierInfo->isAvailable_ = true;
-    supplierInfo->score_ = NETWORK_SCORE;
-    ret = NetConnClient::GetInstance().UpdateNetSupplierInfo(netSupplierId_, supplierInfo);
-    if (ret != NETMANAGER_SUCCESS) {
-        Fail("ROUTE", ret);
-        return;
+    NetLinkInfo next;
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - ipv6Observed_).count();
+    for (uint32_t i = 0; i < ipv6Addresses_.addressCount; ++i) {
+        const auto &a = ipv6Addresses_.addresses[i];
+        in6_addr binary{};
+        if (a.validLifetime == 0 || (a.validLifetime != UINT32_MAX && elapsed >= a.validLifetime) ||
+            (a.flags & (0x08 | 0x40 | 0x04)) || inet_pton(AF_INET6, a.address, &binary) != 1 ||
+            ((binary.s6_addr[0] & 0xfe) != 0xfc && (binary.s6_addr[0] & 0xe0) != 0x20)) continue;
+        INetAddr address;
+        address.type_ = INetAddr::IPV6; address.family_ = AF_INET6;
+        address.address_ = a.address; address.prefixlen_ = a.prefixLength;
+        next.netAddrList_.push_back(address);
+        for (uint32_t bit = a.prefixLength; bit < 128; ++bit)
+            binary.s6_addr[bit / 8] &= ~(0x80 >> (bit % 8));
+        char subnet[INET6_ADDRSTRLEN]{};
+        inet_ntop(AF_INET6, &binary, subnet, sizeof(subnet));
+        Route direct;
+        direct.iface_ = IFACE_NAME; direct.destination_ = address;
+        direct.destination_.address_ = subnet;
+        direct.gateway_.type_ = INetAddr::IPV6; direct.gateway_.family_ = AF_INET6;
+        direct.gateway_.address_ = "::"; direct.hasGateway_ = false;
+        if (std::none_of(next.routeList_.begin(), next.routeList_.end(), [&direct](const auto &route) {
+            return route.destination_.address_ == direct.destination_.address_ &&
+                route.destination_.prefixlen_ == direct.destination_.prefixlen_;
+        })) next.routeList_.push_back(direct);
     }
-    ret = NetConnClient::GetInstance().UpdateNetLinkInfo(netSupplierId_, linkInfo);
-    if (ret != NETMANAGER_SUCCESS) {
-        Fail("ROUTE", ret);
-        return;
+    in6_addr router{};
+    if (result.ipv6LifeTime.routerLifeTime != 0 && inet_pton(AF_INET6, result.strOptRouter1, &router) == 1 &&
+        IN6_IS_ADDR_LINKLOCAL(&router) && !next.netAddrList_.empty()) {
+        Route route;
+        route.iface_ = IFACE_NAME; // Netsys resolves the LLA next hop in this interface's scope.
+        route.destination_.type_ = route.gateway_.type_ = INetAddr::IPV6;
+        route.destination_.family_ = route.gateway_.family_ = AF_INET6;
+        route.destination_.address_ = "::"; route.destination_.prefixlen_ = 0;
+        route.gateway_.address_ = result.strOptRouter1;
+        route.isDefaultRoute_ = route.hasGateway_ = true;
+        next.routeList_.push_back(route);
     }
+    for (uint32_t i = 0; i < result.dnsList.dnsNumber && next.dnsList_.size() < 8; ++i) {
+        auto text = result.dnsList.dnsAddr[i];
+        in6_addr dns{};
+        if (!memchr(text, 0, DHCP_DNS_DATA_MAX_LEN) || inet_pton(AF_INET6, text, &dns) != 1 ||
+            IN6_IS_ADDR_UNSPECIFIED(&dns) || IN6_IS_ADDR_MULTICAST(&dns) || IN6_IS_ADDR_LINKLOCAL(&dns)) continue;
+        INetAddr entry;
+        entry.type_ = INetAddr::IPV6; entry.family_ = AF_INET6; entry.address_ = text;
+        next.dnsList_.push_back(entry);
+    }
+    auto previous = families_.ipv6;
+    families_.ipv6 = next;
+    ipv6Result_ = result;
+    if (!PublishTerminalNetwork()) {
+        families_.ipv6 = previous;
+        FamilyFailure(true, "ROUTE_V6", NETMANAGER_EXT_ERR_OPERATION_FAILED, false); return;
+    }
+    { std::lock_guard lock(mutex_); status_.ipv6.hasError = false; }
+    RefreshFamilyStatus();
+}
+
+void NearlinkIpShareController::FamilyFailure(bool ipv6, const std::string &stage, int32_t code, bool withdraw)
+{
+    // Family failure never stops DHCP/SLAAC, the supplier or the shared NearLink channel.
+    // A later callback retries the family on the same supplier.
+    auto &link = ipv6 ? families_.ipv6 : families_.ipv4;
+    if (withdraw) link = NetLinkInfo{};
+    bool terminal;
     {
         std::lock_guard lock(mutex_);
-        status_.ifaceName = IFACE_NAME;
-        status_.ipv4Address = result.strOptClientId;
-        // ACTIVE means the lease/network was submitted; Internet reachability
-        // and default-network selection remain NetConn detection outcomes.
-        status_.hasUpstream = false;
+        terminal = status_.role == NearlinkIpShareRole::TERMINAL;
+        auto &family = ipv6 ? status_.ipv6 : status_.ipv4;
+        family = NearlinkIpShareFamilyStatus{};
+        family.phase = 3; family.hasError = true;
+        family.error.plane = 4; family.error.family = ipv6 ? 2 : 1;
+        family.error.stage = stage; family.error.code = code; family.error.retryable = true;
     }
-    NETMGR_EXT_LOG_I("[NearlinkIpShare][Terminal] DHCP callback applied interface=%{public}s route=2 dns=%{public}zu "
-                     "validation=requested",
-                     IFACE_NAME, linkInfo->dnsList_.size());
-    leaseExpiry_ = std::chrono::steady_clock::now() + std::chrono::seconds(result.uOptLeasetime);
-    Publish(NearlinkIpShareState::ACTIVE);
+    if (terminal) {
+        if (netSupplierId_ != 0) (void)PublishTerminalNetwork();
+        RefreshFamilyStatus();
+    } else Publish(NearlinkIpShareState::SERVING_NO_UPSTREAM, stage, code);
+}
+
+void NearlinkIpShareController::RefreshFamilyStatus()
+{
+    bool available;
+    {
+        std::lock_guard lock(mutex_);
+        auto fill = [this](NearlinkIpShareFamilyStatus &family, const NetLinkInfo &link, bool v6) {
+            family.configurationAvailable = NearlinkFamilyNetwork::Available(link);
+            if (!family.configurationAvailable) { family.externalAvailable = false; family.validation = 0; }
+            if (family.configurationAvailable) family.phase = 2;
+            else if (!family.hasError) family.phase = v6 && !dualStack_ ? 0 : 1;
+            family.addresses.clear(); family.routes.clear(); family.dns.clear();
+            for (const auto &a : link.netAddrList_) {
+                NearlinkIpShareAddress value;
+                value.address = a.address_; value.prefixLength = a.prefixlen_; value.scopeId = v6 ? interfaceIndex_ : 0;
+                value.origin = v6 ? 2 : 1; value.dadState = v6 ? 2 : 0;
+                auto now = std::chrono::steady_clock::now();
+                auto left = [](uint32_t life, int64_t elapsed) -> uint32_t {
+                    return life == UINT32_MAX ? life : (elapsed >= life ? 0 : life - elapsed);
+                };
+                if (v6) {
+                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - ipv6Observed_).count();
+                    for (uint32_t i = 0; i < ipv6Addresses_.addressCount; ++i) {
+                        const auto &entry = ipv6Addresses_.addresses[i];
+                        if (a.address_ != entry.address) continue;
+                        value.preferredLifetime = left(entry.preferredLifetime, elapsed);
+                        value.validLifetime = left(entry.validLifetime, elapsed);
+                        value.dadState = value.preferredLifetime ? 2 : 3;
+                    }
+                } else {
+                    auto remaining = std::chrono::duration_cast<std::chrono::seconds>(leaseExpiry_ - now).count();
+                    value.preferredLifetime = value.validLifetime = remaining > 0 ? remaining : 0;
+                }
+                family.addresses.push_back(value);
+            }
+            for (const auto &r : link.routeList_) {
+                NearlinkIpShareRoute value;
+                value.destination = r.destination_.address_; value.gateway = r.gateway_.address_;
+                value.prefixLength = r.destination_.prefixlen_; value.scopeId = v6 ? interfaceIndex_ : 0;
+                if (!v6 && !family.addresses.empty()) {
+                    value.lifetimeKnown = true; value.lifetime = family.addresses.front().validLifetime;
+                }
+                family.routes.push_back(value);
+            }
+            for (const auto &d : link.dnsList_) {
+                NearlinkIpShareDns value; value.address = d.address_;
+                value.transportFamily = v6 ? 2 : 1; value.source = v6 ? 2 : 1;
+                // RDNSS expiry remains owned by DHCP's DNS ledger; its C snapshot has no per-record TTL.
+                if (!v6 && !family.addresses.empty()) {
+                    value.lifetimeKnown = true; value.lifetime = family.addresses.front().validLifetime;
+                }
+                family.dns.push_back(value);
+            }
+        };
+        fill(status_.ipv4, families_.ipv4, false); fill(status_.ipv6, families_.ipv6, true);
+        status_.ipv4Address = families_.ipv4.netAddrList_.empty() ? "" : families_.ipv4.netAddrList_.front().address_;
+        available = status_.ipv4.configurationAvailable || status_.ipv6.configurationAvailable;
+        status_.hasUpstream = status_.ipv4.externalAvailable || status_.ipv6.externalAvailable;
+    }
+    Publish(available ? NearlinkIpShareState::ACTIVE : NearlinkIpShareState::CONFIGURING);
+}
+
+void NearlinkIpShareController::ValidateFamilies()
+{
+    auto now = std::chrono::steady_clock::now();
+    if (validationInFlight_ || now < nextValidation_) return;
+    int32_t netId;
+    bool ipv4, ipv6;
+    { std::lock_guard lock(mutex_);
+      netId = status_.netId; ipv4 = status_.ipv4.configurationAvailable; ipv6 = status_.ipv6.configurationAvailable;
+      if (netId < 0 || (!ipv4 && !ipv6)) return;
+      if (ipv4) status_.ipv4.validation = 1;
+      if (ipv6) status_.ipv6.validation = 1; }
+    validationInFlight_ = true;
+    nextValidation_ = now + std::chrono::seconds(30);
+    auto self = shared_from_this();
+    // DNS/HTTP must never block the shared lifecycle worker or delay stop.
+    std::thread([self, netId, ipv4, ipv6, generation = generation_.load(), revision = networkRevision_]() {
+        auto result = ValidateNearlinkFamilies(netId, ipv4, ipv6);
+        NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, result, generation, revision]() {
+            if (!self->IsCurrentSession(generation)) return;
+            self->validationInFlight_ = false;
+            if (revision != self->networkRevision_) return;
+            { std::lock_guard lock(self->mutex_);
+              self->status_.ipv4.validation = result.ipv4; self->status_.ipv6.validation = result.ipv6;
+              self->status_.ipv4.externalAvailable = result.ipv4 == 2 && self->status_.ipv4.configurationAvailable;
+              self->status_.ipv6.externalAvailable = result.ipv6 == 2 && self->status_.ipv6.configurationAvailable; }
+            self->RefreshFamilyStatus();
+        });
+    }).detach();
+}
+
+void NearlinkIpShareController::ScheduleMaintenance(uint64_t generation)
+{
+    auto self = shared_from_this();
+    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, generation]() {
+        if (!self->IsCurrentSession(generation)) return;
+        if (if_nametoindex(IFACE_NAME) != self->interfaceIndex_) {
+            self->Fail("LINK", NETMANAGER_EXT_ERR_OPERATION_FAILED); return;
+        }
+        OHOS::Nearlink::NearlinkIpShareStatus current;
+        if (OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current) != 0 ||
+            (current.generation != self->linkGeneration_ && current.role != OHOS::Nearlink::NearlinkIpShareRole::GATEWAY) || current.state == OHOS::Nearlink::NearlinkIpShareState::IDLE ||
+            current.state == OHOS::Nearlink::NearlinkIpShareState::ERROR) {
+            self->Fail("LINK", NETMANAGER_EXT_ERR_OPERATION_FAILED); return;
+        }
+        if (current.role == OHOS::Nearlink::NearlinkIpShareRole::GATEWAY) {
+            self->HandleNearlinkStatus(current);
+            self->ConfigureGateway();
+            self->ConfigureUpstream();
+            self->ScheduleMaintenance(generation); return;
+        }
+        if (self->families_.ExpireLease(std::chrono::steady_clock::now())) {
+            self->retryIpv4_ = true;
+            self->FamilyFailure(false, "DHCP", DHCP_RENEW_TIMEOUT);
+        }
+        self->RetryTerminalDhcp();
+        if (self->dualStack_) self->ApplyIpv6Network(self->ipv6Result_);
+        self->ValidateFamilies();
+        self->ScheduleMaintenance(generation);
+    }, 1000000);
 }
 
 int32_t NearlinkIpShareController::CleanupUpstream()
@@ -887,6 +1251,7 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
         ++generation_; // Discard already queued DHCP/link/network callbacks.
     }
     int32_t error = 0;
+    NearlinkIpShareStatus idle;
     auto result = [&error](const char *resource, int32_t ret) {
         NETMGR_EXT_LOG_I("[NearlinkIpShare][Cleanup] resource=%{public}s code=%{public}d", resource, ret);
         if (ret != 0 && error == 0) {
@@ -900,18 +1265,23 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
     }
     if (netSupplierId_ != 0 &&
         result("supplier/routes/DNS", NetConnClient::GetInstance().UnregisterNetSupplier(netSupplierId_))) {
-        netSupplierId_ = 0;
+        netSupplierId_ = 0; supplierAvailable_ = false; appliedLink_ = NetLinkInfo{};
     }
     result("NAT/forwarding", CleanupUpstream());
+    families_ = NearlinkFamilyNetwork{};
+    ipv6Addresses_ = DhcpL3Ipv6Snapshot{};
+    maintenancePending_ = false;
+    ++networkRevision_; validationInFlight_ = false;
     if (dnsProxyStarted_ && result("DNS proxy", NetsysController::GetInstance().StopDnsProxyListen())) {
         dnsProxyStarted_ = false;
     }
-    if (dhcpClientStarted_ && result("DHCP client", StopDhcpClient(IFACE_NAME, false, true))) {
+    if (dhcpClientStarted_ && result("DHCP client", StopDhcpClient(IFACE_NAME, dualStack_, true))) {
         dhcpClientStarted_ = false;
     }
     if (dhcpServerStarted_ && result("DHCP server", StopDhcpServer(IFACE_NAME))) {
         dhcpServerStarted_ = false;
     }
+    if (result("IPv6 runtime", ipv6Runtime_.Cleanup() ? 0 : NETMANAGER_EXT_ERR_OPERATION_FAILED)) ipv6Prepared_ = false;
     if (localRouteAdded_ &&
         result("local route", NetsysController::GetInstance().NetworkRemoveRoute(IP_SHARE_LOCAL_NET_ID, IFACE_NAME,
                                                                                  LOCAL_SUBNET, DIRECT_NEXT_HOP))) {
@@ -953,7 +1323,10 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
         }
         stopRequested_ = false;
         if (error == 0 && publishIdle) {
-            status_ = NearlinkIpShareStatus{};
+            idle.generation = status_.generation;
+            idle.sequence = status_.sequence + 1;
+            idle.requestedMode = status_.requestedMode;
+            status_ = idle;
         }
         status_.ipv4Address.clear();
         status_.hasUpstream = false;
@@ -964,7 +1337,7 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
     }
     if (publishIdle) {
         // Publish the completed snapshot without overwriting a newly reserved start.
-        NetworkShareTracker::GetInstance().SendNearlinkStateChange(NearlinkIpShareStatus{});
+        NetworkShareTracker::GetInstance().SendNearlinkStateChange(idle);
     }
     return true;
 }
@@ -1000,7 +1373,13 @@ void NearlinkIpShareController::Publish(NearlinkIpShareState state, const std::s
         status_.state = state;
         status_.errorStage = errorStage;
         status_.errorCode = errorCode;
+        ++status_.sequence;
         snapshot = status_;
+        NETMGR_EXT_LOG_I("[NearlinkIpShare][Families] generation=%{public}llu sequence=%{public}llu netId=%{public}d "
+            "ipv4=%{public}d validation4=%{public}d ipv6=%{public}d validation6=%{public}d",
+            static_cast<unsigned long long>(status_.generation), static_cast<unsigned long long>(status_.sequence),
+            status_.netId, status_.ipv4.configurationAvailable, status_.ipv4.validation,
+            status_.ipv6.configurationAvailable, status_.ipv6.validation);
         NETMGR_EXT_LOG_I("[NearlinkIpShare][State] role=%{public}d %{public}d->%{public}d peer=%{public}s "
                          "errorStage=%{public}s code=%{public}d",
                          static_cast<int32_t>(status_.role), static_cast<int32_t>(previous),

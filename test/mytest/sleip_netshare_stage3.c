@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+int SleipSystemNetwork(int argc, char **argv);
 int SleipIpv6Ra(int argc, char **argv);
 int SleipIpv6Terminal(int argc, char **argv);
 
@@ -46,6 +47,7 @@ static int CheckInterface(const char *iface)
 
 int main(int argc, char *argv[])
 {
+    if (argc > 1 && strcmp(argv[1], "system-network") == 0) return SleipSystemNetwork(argc, argv);
     if (argc > 1 && strcmp(argv[1], "ipv6-ra") == 0) return SleipIpv6Ra(argc, argv);
     if (argc > 1 && strcmp(argv[1], "ipv6-terminal") == 0) return SleipIpv6Terminal(argc, argv);
     if (argc == 2 && strcmp(argv[1], "load-sharing") == 0) {
@@ -57,7 +59,7 @@ int main(int argc, char *argv[])
     if (argc == 3 && strcmp(argv[1], "check-interface") == 0) {
         return CheckInterface(argv[2]);
     }
-    fprintf(stderr, "usage: %s load-sharing|check-runtime|check-interface IFACE|"
+    fprintf(stderr, "usage: %s system-network start G|A PEER | system-network stop G|A | system-network status | load-sharing|check-runtime|check-interface IFACE|"
         "ipv6-ra PREFIX DNS G_LLA G_LAYER2 ROUTER_LIFE PREFERRED VALID DNS_LIFE RUN_SECONDS|ipv6-terminal A_LLA SLAAC_TOKEN RUN_SECONDS\n", argv[0]);
     return 2;
 }

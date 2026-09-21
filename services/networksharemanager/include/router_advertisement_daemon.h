@@ -117,6 +117,7 @@ public:
     void ProcessSendRaPacket();
     RaParams GetDeprecatedRaParams(RaParams &oldRa, RaParams &newRa);
     void BuildNewRa(const RaParams &newRa);
+    bool AdvertiseNow();
 
 private:
     bool IsSocketValid();
