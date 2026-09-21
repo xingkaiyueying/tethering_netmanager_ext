@@ -88,6 +88,13 @@ bool Number(const char *text, uint32_t &out)
     out = value; return true;
 }
 
+int RaFailure(const char *stage, int code)
+{
+    fprintf(stderr, "S2_RA_FAILED stage=%s code=%d\n", stage, code);
+    fflush(stderr);
+    return code;
+}
+
 }
 
 extern "C" int SleipIpv6Terminal(int argc, char **argv)
@@ -115,36 +122,45 @@ extern "C" int SleipIpv6Terminal(int argc, char **argv)
 extern "C" int SleipIpv6Ra(int argc, char **argv)
 {
     // ipv6-ra PREFIX DNS G_LLA G_LAYER2 ROUTER_LIFE PREFERRED VALID DNS_LIFE RUN_SECONDS
-    if (argc != 11 || if_nametoindex("sleip0") == 0) return 2;
+    if (argc != 11) return RaFailure("arguments", 2);
+    if (if_nametoindex("sleip0") == 0) return RaFailure("interface", 2);
     in6_addr prefix{}, dns{}, lla{};
     uint32_t router, preferred, valid, dnsLife, seconds;
     if (inet_pton(AF_INET6, argv[2], &prefix) != 1 || inet_pton(AF_INET6, argv[3], &dns) != 1 ||
-        inet_pton(AF_INET6, argv[4], &lla) != 1 || !IN6_IS_ADDR_LINKLOCAL(&lla) ||
-        !Number(argv[6], router) || router > 9000 || !Number(argv[7], preferred) || !Number(argv[8], valid) ||
-        preferred > valid || !Number(argv[9], dnsLife) || !Number(argv[10], seconds) || seconds > 3600 || !seconds)
-        return 2;
-    if ((prefix.s6_addr[0] & 0xfe) != 0xfc && (prefix.s6_addr[0] & 0xe0) != 0x20) return 2;
-    for (size_t i = 8; i < 16; ++i) if (prefix.s6_addr[i]) return 2;
+        inet_pton(AF_INET6, argv[4], &lla) != 1 || !IN6_IS_ADDR_LINKLOCAL(&lla))
+        return RaFailure("addresses", 2);
+    if (!Number(argv[6], router) || router > 9000 || !Number(argv[7], preferred) ||
+        !Number(argv[8], valid) || !Number(argv[9], dnsLife) || !Number(argv[10], seconds) ||
+        seconds > 3600 || !seconds) return RaFailure("lifetimes", 2);
+    if (preferred > valid) return RaFailure("preferred_gt_valid", 2);
+    if ((prefix.s6_addr[0] & 0xfe) != 0xfc && (prefix.s6_addr[0] & 0xe0) != 0x20)
+        return RaFailure("prefix_scope", 2);
+    for (size_t i = 8; i < 16; ++i) {
+        if (prefix.s6_addr[i]) return RaFailure("prefix_length", 2);
+    }
     unsigned values[6]; char tail;
     if (sscanf(argv[5], "%2x:%2x:%2x:%2x:%2x:%2x%c", &values[0], &values[1], &values[2], &values[3],
-        &values[4], &values[5], &tail) != 6 || strlen(argv[5]) != 17) return 2;
+        &values[4], &values[5], &tail) != 6 || strlen(argv[5]) != 17) return RaFailure("layer2", 2);
     InterfaceOwner owner;
     if (!owner.Flags() || !owner.Set("disable_ipv6", "0") || !owner.Set("forwarding", "1") ||
         !owner.Set("accept_ra", "0") || !owner.Set("accept_dad", "1") || !owner.Set("dad_transmits", "1") ||
-        !owner.Add(std::string(argv[4]) + "/64")) return 1;
+        !owner.Add(std::string(argv[4]) + "/64")) return RaFailure("interface_prepare", 1);
     sleep(2); // Kernel DAD outcome is subsequently enforced at the NearLink TUN transmit boundary.
     auto daemon = std::make_shared<RouterAdvertisementDaemon>();
-    if (daemon->Init("sleip0") != 0) return 1;
+    if (daemon->Init("sleip0") != 0) return RaFailure("daemon_init", 1);
     RaParams params;
     params.layer3_ = true; params.mtu_ = 1500; params.macAddr_ = argv[5]; params.routerLifetime_ = router;
     params.rdnssLifetime_ = dnsLife; params.dnses_.push_back(dns);
     IpPrefix p; p.prefix = prefix; p.prefixesLength = 64; p.preferredLifetime = preferred; p.validLifetime = valid;
     params.prefixes_.push_back(p); daemon->BuildNewRa(params);
-    if (daemon->StartRa() != 0) return 1;
+    if (daemon->StartRa() != 0) return RaFailure("daemon_start", 1);
     sleep(3); // Advertise the authorized prefix before the gateway address starts DAD.
     prefix.s6_addr[15] = 1; char gateway[INET6_ADDRSTRLEN]{};
     inet_ntop(AF_INET6, &prefix, gateway, sizeof(gateway));
-    if (!owner.Add(std::string(gateway) + "/64")) { daemon->StopRa(); return 1; }
+    if (!owner.Add(std::string(gateway) + "/64")) {
+        daemon->StopRa();
+        return RaFailure("gateway_address", 1);
+    }
     printf("S2_RA_RUNNING prefix=%s/64 dns=%s gateway=%s external_validation=NOT_RUN\n", argv[2], argv[3], gateway);
     fflush(stdout);
     const unsigned index = if_nametoindex("sleip0");
