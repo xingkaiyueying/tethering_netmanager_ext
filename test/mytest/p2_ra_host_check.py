@@ -136,6 +136,7 @@ ssize_t recvmsg(int,msghdr*,int);
     assert 'if (HasAddress(address)) return true;' in fixture_text
     assert 'owner.KeepAddresses();' in fixture_text
     assert 'gateway_retained_until_interface_cleanup=1' in fixture_text
+    assert 'first_source_confirmation=REQUIRED_WITHIN_60S' in fixture_text
     for source in (src/'src/router_advertisement_daemon.cpp', fixture):
         subprocess.run(['g++','-std=c++17','-include','memory','-fsyntax-only','-I'+str(out),str(source)],check=True)
     print('RA daemon and native IPv6 fixture syntax/retained-address policy=PASS (OS/FFRT boundary stubbed)')

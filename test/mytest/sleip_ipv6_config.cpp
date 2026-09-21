@@ -183,12 +183,14 @@ extern "C" int SleipIpv6Ra(int argc, char **argv)
         daemon->StopRa();
         return RaFailure("gateway_address", 1);
     }
-    printf("S2_RA_RUNNING prefix=%s/64 dns=%s gateway=%s external_validation=NOT_RUN\n", argv[2], argv[3], gateway);
+    printf("S2_RA_RUNNING prefix=%s/64 dns=%s gateway=%s "
+        "first_source_confirmation=REQUIRED_WITHIN_60S external_validation=NOT_RUN\n",
+        argv[2], argv[3], gateway);
     fflush(stdout);
     const unsigned index = if_nametoindex("sleip0");
     for (uint32_t i = 0; i < seconds && if_nametoindex("sleip0") == index; ++i) sleep(1);
     daemon->StopRa();
-    // Renumbering and single-address deletion are verified after this RA process returns.
+    // Confirm the new terminal source while RA is running; deletion may continue after return.
     // Keep successful gateway addresses until the NearLink round removes sleip0; a later
     // RA fixture in the same generation reuses the existing LLA and adds its new prefix.
     if (if_nametoindex("sleip0") == index) {
