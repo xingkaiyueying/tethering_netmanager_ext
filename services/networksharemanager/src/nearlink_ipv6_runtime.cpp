@@ -114,10 +114,24 @@ bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2)
 bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding)
 {
     auto now = std::chrono::steady_clock::now();
-    std::ifstream file("/system/etc/communication/netmanager_ext/nearlink_ipv6.conf");
-    std::string prefix, dns, extra;
+    // Read the shared configuration on reconciliation so renumbering remains live.
+    std::ifstream file("/system/etc/communication/netmanager_ext/network_share_config.cfg");
+    std::string prefix, dns, line;
+    bool prefixSeen = false, dnsSeen = false, duplicate = false;
+    while (std::getline(file, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        auto separator = line.find(':'); // IPv6 colons belong to the value.
+        if (separator == std::string::npos) continue;
+        auto key = line.substr(0, separator);
+        auto value = line.substr(separator + 1);
+        if (key == "nearlink_ipv6_prefix") {
+            duplicate |= prefixSeen; prefixSeen = true; prefix = value;
+        } else if (key == "nearlink_ipv6_dns") {
+            duplicate |= dnsSeen; dnsSeen = true; dns = value;
+        }
+    }
     in6_addr binary{}, resolver{};
-    bool configured = bool(file >> prefix >> dns) && !(file >> extra) && Prefix(prefix, binary) &&
+    bool configured = !duplicate && prefixSeen && dnsSeen && Prefix(prefix, binary) &&
         inet_pton(AF_INET6, dns.c_str(), &resolver) == 1 && !IN6_IS_ADDR_UNSPECIFIED(&resolver) &&
         !IN6_IS_ADDR_MULTICAST(&resolver) && !IN6_IS_ADDR_LINKLOCAL(&resolver);
     bool defaultRoute = false;

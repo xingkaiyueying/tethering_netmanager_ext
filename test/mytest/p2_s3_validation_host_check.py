@@ -59,20 +59,29 @@ int BindSocket(int,int netId){assert(netId==42);return bindError;}};}
 #define close Close
 ''')
     production = (src / 'src/nearlink_family_validation.cpp').read_text().replace(
-        '/system/etc/communication/netmanager_ext/nearlink_validation.conf', 'config.txt')
+        '/system/etc/netdetectionurl.conf', 'config.txt')
     (out / 'test.cpp').write_text(production + r'''
 #include <cstdio>
 using namespace OHOS::NetManagerStandard;
 int main(){
  auto r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==0&&r.ipv6==0);
- {std::ofstream f("config.txt");f<<"endpoint.example 80 /generate_204";}
+ {std::ofstream f("config.txt");f<<"HttpsProbeUrl:https://unused.example/\r\nHttpProbeUrl:http://endpoint.example/generate_204\r\n";}
  r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==2&&r.ipv6==2&&closed==2);
  failFamily=AF_INET6;r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==2&&r.ipv6==3);
  failFamily=0;response="HTTP/1.1 302 Found\r\n";
  r=ValidateNearlinkFamilies(42,true,false);assert(r.ipv4==3&&r.ipv6==0);
  bindError=-1;r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==3&&r.ipv6==3);
- {std::ofstream f("config.txt");f<<"endpoint.example 65536 /generate_204";}
+ {std::ofstream f("config.txt");f<<"HttpProbeUrl:http://endpoint.example:65536/generate_204";}
  r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==0&&r.ipv6==0);
+ std::string host,port,path,authority;
+ {std::ofstream f("config.txt");f<<"HttpProbeUrl:http://endpoint.example:8080?x=1\n";}
+ assert(ReadProbe(host,port,path,authority));assert(host=="endpoint.example"&&port=="8080"&&path=="/?x=1"&&authority=="endpoint.example:8080");
+ for(auto value:{"https://endpoint.example/", "http://user@endpoint.example/", "http://endpoint.example:0/", "http://endpoint.example:abc/", "http://endpoint.example/#x", "http://endpoint.example/ bad"}) {
+  {std::ofstream f("config.txt");f<<"HttpProbeUrl:"<<value<<"\n";}
+  assert(!ReadProbe(host,port,path,authority));
+ }
+ {std::ofstream f("config.txt");f<<"HttpProbeUrl:http://one.example/\nHttpProbeUrl:http://two.example/\n";}
+ assert(!ReadProbe(host,port,path,authority));
  puts("family validation: netId resolver/socket binding, IPv4/IPv6 independent outcomes, fragmented HTTP 204, redirect/failure rejection, missing config UNKNOWN PASS");
 }
 ''')

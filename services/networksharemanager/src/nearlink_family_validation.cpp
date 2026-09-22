@@ -14,6 +14,34 @@
 
 namespace OHOS::NetManagerStandard {
 namespace {
+bool ReadProbe(std::string &host, std::string &port, std::string &path, std::string &authority)
+{
+    std::ifstream config("/system/etc/netdetectionurl.conf");
+    std::string line, url;
+    bool seen = false;
+    while (std::getline(config, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.compare(0, 13, "HttpProbeUrl:") != 0) continue;
+        if (seen) return false;
+        seen = true; url = line.substr(13);
+    }
+    // This probe supports direct HTTP 204 only. Unsupported input stays UNKNOWN.
+    if (!seen || url.size() > 1024 || url.compare(0, 7, "http://") != 0 ||
+        url.find_first_of("\r\n\t #") != std::string::npos) return false;
+    auto end = url.find_first_of("/?", 7);
+    authority = url.substr(7, end == std::string::npos ? end : end - 7);
+    path = end == std::string::npos ? "/" : url.substr(end);
+    if (path[0] == '?') path.insert(0, "/");
+    if (authority.empty() || authority.find_first_of("@[]\\") != std::string::npos || path.size() > 512)
+        return false;
+    auto colon = authority.find(':');
+    host = authority.substr(0, colon); port = colon == std::string::npos ? "80" : authority.substr(colon + 1);
+    if (host.empty() || host.size() > 253 || port.empty() || port.size() > 5 ||
+        port.find_first_not_of("0123456789") != std::string::npos) return false;
+    unsigned number = 0;
+    for (char digit : port) number = number * 10 + digit - '0';
+    return number > 0 && number <= 65535;
+}
 bool Http204(int32_t netId, const addrinfo &address, const std::string &host, const std::string &path)
 {
     int fd = socket(address.ai_family, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -52,7 +80,8 @@ bool Http204(int32_t netId, const addrinfo &address, const std::string &host, co
     };
     bool success = check(); close(fd); return success;
 }
-bool CheckFamily(int32_t netId, int family, const std::string &host, const std::string &port, const std::string &path)
+bool CheckFamily(int32_t netId, int family, const std::string &host, const std::string &port,
+    const std::string &path, const std::string &authority)
 {
     addrinfo hints{}; hints.ai_family = family; hints.ai_socktype = SOCK_STREAM;
     addrinfo *addresses = nullptr;
@@ -61,7 +90,7 @@ bool CheckFamily(int32_t netId, int family, const std::string &host, const std::
     bool success = false; unsigned tried = 0;
     for (auto entry = addresses; entry && tried < 2 && !success; entry = entry->ai_next) {
         if (entry->ai_family != family) continue;
-        ++tried; success = Http204(netId, *entry, host, path);
+        ++tried; success = Http204(netId, *entry, authority, path);
     }
     if (addresses) freeaddrinfo(addresses);
     return success;
@@ -71,15 +100,10 @@ NearlinkFamilyValidation ValidateNearlinkFamilies(int32_t netId, bool ipv4, bool
 {
     NearlinkFamilyValidation result;
     if (netId < 0) return result;
-    // Environment owner supplies an external endpoint. Missing input remains UNKNOWN, never a fabricated PASS.
-    std::ifstream config("/system/etc/communication/netmanager_ext/nearlink_validation.conf");
-    std::string host, path, extra; unsigned port = 0;
-    if (!(config >> host >> port >> path) || (config >> extra) || host.size() > 253 ||
-        port == 0 || port > 65535 || path.empty() || path[0] != '/' || path.size() > 512 ||
-        host.find_first_of("\r\n\t /:") != std::string::npos || path.find_first_of("\r\n\t ") != std::string::npos)
-        return result;
-    if (ipv4) result.ipv4 = CheckFamily(netId, AF_INET, host, std::to_string(port), path) ? 2 : 3;
-    if (ipv6) result.ipv6 = CheckFamily(netId, AF_INET6, host, std::to_string(port), path) ? 2 : 3;
+    std::string host, port, path, authority;
+    if (!ReadProbe(host, port, path, authority)) return result;
+    if (ipv4) result.ipv4 = CheckFamily(netId, AF_INET, host, port, path, authority) ? 2 : 3;
+    if (ipv6) result.ipv6 = CheckFamily(netId, AF_INET6, host, port, path, authority) ? 2 : 3;
     return result;
 }
 } // namespace OHOS::NetManagerStandard

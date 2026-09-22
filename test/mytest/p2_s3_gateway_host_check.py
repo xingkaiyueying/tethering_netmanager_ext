@@ -39,7 +39,7 @@ struct Route {Address destination_;};struct NetLinkInfo {std::vector<Address> ne
 }
 ''')
     put('nearlink_ipv6_runtime.h', (src / 'include/nearlink_ipv6_runtime.h').read_text())
-    advertise = advertise.replace('/system/etc/communication/netmanager_ext/nearlink_ipv6.conf', 'config.txt')
+    advertise = advertise.replace('/system/etc/communication/netmanager_ext/network_share_config.cfg', 'config.txt')
     advertise = advertise.replace('/proc/net/if_inet6', 'if_inet6.txt')
     put('test.cpp', r'''
 #include <memory>
@@ -69,7 +69,7 @@ using namespace OHOS::NetManagerStandard;
 int main(){
  NearlinkIpv6Runtime runtime;runtime.ifindex_=7;runtime.layer2_="02:11:22:33:44:55";
  assert(!runtime.Advertise(nullptr,false));
- {std::ofstream f("config.txt");f<<"fd77:77:1:: fd77:77:1::53";}
+ {std::ofstream f("config.txt");f<<"share_support:true\nnearlink_ipv6_prefix:fd77:77:1::\r\nnearlink_ipv6_dns:fd77:77:1::53\r\n";}
  {std::ofstream f("if_inet6.txt");f<<"fd770077000100000000000000000001 07 40 00 00 sleip0\n";}
  assert(!runtime.Advertise(nullptr,false));assert(RouterAdvertisementDaemon::starts==1);
  runtime.advertisedAt_-=std::chrono::seconds(6);
@@ -77,7 +77,7 @@ int main(){
  NetLinkInfo up;Route def;def.destination_.family_=AF_INET6;up.routeList_.push_back(def);
  assert(runtime.Advertise(&up,true));assert(runtime.daemon_->params.routerLifetime_==180);
  assert(runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==1);
- {std::ofstream f("config.txt");f<<"fd77:77:2:: fd77:77:2::53";}
+ {std::ofstream f("config.txt");f<<"nearlink_ipv6_prefix:fd77:77:2::\nnearlink_ipv6_dns:fd77:77:2::53\n";}
  assert(!runtime.Advertise(&up,true));assert(runtime.retired_.size()==1);
  assert(runtime.daemon_->params.prefixes_.size()==2);
  assert(runtime.daemon_->params.prefixes_[1].preferredLifetime==0);
@@ -90,6 +90,10 @@ int main(){
  up.netAddrList_.push_back({AF_INET6,64,"fd77:77:2::10"});
  assert(!runtime.Advertise(&up,true));assert(runtime.daemon_->params.routerLifetime_==0);
  assert(runtime.prefix_.empty()); // upstream on-link /64 is never copied downstream
+ {std::ofstream f("config.txt");f<<"nearlink_ipv6_prefix:fd77:77:3::\nnearlink_ipv6_prefix:fd77:77:4::\nnearlink_ipv6_dns:fd77::53\n";}
+ assert(!runtime.Advertise(nullptr,false));assert(runtime.prefix_.empty());
+ {std::ofstream f("config.txt");f<<"nearlink_ipv6_prefix:\nnearlink_ipv6_dns:\n";}
+ assert(!runtime.Advertise(nullptr,false));assert(runtime.prefix_.empty());
  puts("gateway: static prefix, no-upstream restriction, single RA owner, overlap rejection, renumber/DNS withdrawal, retained old resources PASS");
 }
 ''')
