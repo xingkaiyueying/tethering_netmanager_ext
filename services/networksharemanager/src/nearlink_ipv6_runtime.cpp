@@ -1,5 +1,6 @@
 /* Copyright (c) 2026 Huawei Device Co., Ltd. Licensed under the Apache License, Version 2.0. */
 #include "nearlink_ipv6_runtime.h"
+#include <net/if.h>
 #include "netsys_controller.h"
 #include <arpa/inet.h>
 #include <algorithm>
@@ -9,7 +10,6 @@
 #include <fstream>
 #include <linux/if_link.h>
 #include <linux/rtnetlink.h>
-#include <net/if.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
