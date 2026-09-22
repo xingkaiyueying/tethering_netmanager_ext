@@ -131,9 +131,20 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
         }
     }
     in6_addr binary{}, resolver{};
-    bool configured = !duplicate && prefixSeen && dnsSeen && Prefix(prefix, binary) &&
-        inet_pton(AF_INET6, dns.c_str(), &resolver) == 1 && !IN6_IS_ADDR_UNSPECIFIED(&resolver) &&
-        !IN6_IS_ADDR_MULTICAST(&resolver) && !IN6_IS_ADDR_LINKLOCAL(&resolver);
+    bool configured = !duplicate && prefixSeen && Prefix(prefix, binary);
+    if (configured && dns.empty()) {
+        // The shared DNS proxy listens on the local gateway address. Keep the
+        // RDNSS endpoint stable without requiring a second per-image address.
+        resolver = binary;
+        resolver.s6_addr[15] = 1;
+        char defaultDns[INET6_ADDRSTRLEN]{};
+        configured = inet_ntop(AF_INET6, &resolver, defaultDns, sizeof(defaultDns)) != nullptr;
+        if (configured) dns = defaultDns;
+    } else if (configured) {
+        configured = inet_pton(AF_INET6, dns.c_str(), &resolver) == 1 &&
+            !IN6_IS_ADDR_UNSPECIFIED(&resolver) && !IN6_IS_ADDR_MULTICAST(&resolver) &&
+            !IN6_IS_ADDR_LINKLOCAL(&resolver);
+    }
     bool defaultRoute = false;
     if (upstream && configured) {
         for (const auto &a : upstream->netAddrList_) {
