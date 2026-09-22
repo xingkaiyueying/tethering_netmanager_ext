@@ -33,7 +33,7 @@ class Parcelable { public: virtual ~Parcelable()=default; virtual bool Marshalli
                  'netmgr_ext_log_wrapper.h', 'netsys_controller.h', 'networkshare_tracker.h', 'net_manager_ext_constants.h', 'securec.h']:
         put(name, '#pragma once\n#include "mock.h"\n')
     # Socket parsing uses WinSock, not a home-made IPv6 parser.
-    put('netinet/ip.h', '#pragma once\n#include <winsock2.h>\n#include <ws2tcpip.h>\n#undef ERROR\n')
+    put('netinet/ip.h', '#pragma once\n#include <winsock2.h>\n#include <ws2tcpip.h>\n#undef ERROR\nextern "C" int inet_pton(int,const char*,void*);\nextern "C" const char* inet_ntop(int,const void*,char*,size_t);\n')
     put('arpa/inet.h', '#include <netinet/ip.h>\n')
     put('net/if.h', '#pragma once\ninline unsigned if_nametoindex(const char*) { return 7; }\n')
     put('nearlink_ipv6_runtime.h', '''#pragma once

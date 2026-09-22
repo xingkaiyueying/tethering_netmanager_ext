@@ -24,6 +24,8 @@ with tempfile.TemporaryDirectory(prefix='p2-s3-validation-') as directory:
 #include <algorithm>
 #include <cassert>
 constexpr int SOCK_CLOEXEC=0,MSG_NOSIGNAL=0,QEURY_TYPE_NETSYS=1;
+constexpr short POLLOUT=0x0010;
+struct pollfd {int fd;short events;short revents;};
 struct queryparam {int qp_netid=0,qp_type=0;};
 inline int activeFamily=0,failFamily=0,closed=0,bindError=0;
 inline size_t offset=0;
@@ -34,7 +36,7 @@ inline int Resolve(const char*,const char*,const addrinfo*h,addrinfo**out,queryp
 inline void Free(addrinfo*){}
 inline int Socket(int,int,int){offset=0;return 3;}
 inline int Connect(int,const sockaddr*,size_t){return 0;}
-inline int Poll(WSAPOLLFD*,int,int){return 1;}
+inline int Poll(pollfd*,int,int){return 1;}
 inline int Fcntl(int,int,int){return 0;}
 inline int GetOption(int,int,int,void*value,socklen_t*){*static_cast<int*>(value)=0;return 0;}
 inline int SetOption(int,int,int,const void*,size_t){return 0;}

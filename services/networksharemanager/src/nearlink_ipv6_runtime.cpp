@@ -4,6 +4,7 @@
 #include "netsys_controller.h"
 #include <arpa/inet.h>
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstring>
 #include <cstdio>
@@ -18,9 +19,62 @@ namespace {
 constexpr const char *IFACE = "sleip0";
 bool Prefix(const std::string &text, in6_addr &address)
 {
-    if (inet_pton(AF_INET6, text.c_str(), &address) != 1 ||
-        ((address.s6_addr[0] & 0xfe) != 0xfc && (address.s6_addr[0] & 0xe0) != 0x20)) return false;
+    if (inet_pton(AF_INET6, text.c_str(), &address) != 1) return false;
     for (size_t i = 8; i < 16; ++i) if (address.s6_addr[i]) return false;
+    return true;
+}
+
+bool Layer2Token(const std::string &layer2, in6_addr &token)
+{
+    if (layer2.size() != 17) return false;
+    std::array<unsigned, 6> bytes{};
+    int consumed = 0;
+    if (std::sscanf(layer2.c_str(), "%2x:%2x:%2x:%2x:%2x:%2x%n", &bytes[0], &bytes[1], &bytes[2],
+        &bytes[3], &bytes[4], &bytes[5], &consumed) != 6 || consumed != static_cast<int>(layer2.size())) return false;
+    token = IN6ADDR_ANY_INIT;
+    token.s6_addr[8] = static_cast<uint8_t>(bytes[0] ^ 0x02);
+    token.s6_addr[9] = static_cast<uint8_t>(bytes[1]);
+    token.s6_addr[10] = static_cast<uint8_t>(bytes[2]);
+    token.s6_addr[11] = 0xff;
+    token.s6_addr[12] = 0xfe;
+    token.s6_addr[13] = static_cast<uint8_t>(bytes[3]);
+    token.s6_addr[14] = static_cast<uint8_t>(bytes[4]);
+    token.s6_addr[15] = static_cast<uint8_t>(bytes[5]);
+    return true;
+}
+
+bool DeriveDownstreamPrefix(const NetLinkInfo *upstream, in6_addr &downstream, std::string &text)
+{
+    if (upstream == nullptr) return false;
+    std::vector<in6_addr> global;
+    std::vector<in6_addr> ula;
+    for (const auto &address : upstream->netAddrList_) {
+        in6_addr candidate{};
+        if (address.family_ != AF_INET6 || inet_pton(AF_INET6, address.address_.c_str(), &candidate) != 1) continue;
+        bool isGlobal = (candidate.s6_addr[0] & 0xe0) == 0x20;
+        bool isUla = (candidate.s6_addr[0] & 0xfe) == 0xfc;
+        if (!isGlobal && !isUla) continue;
+        std::fill(candidate.s6_addr + 8, candidate.s6_addr + 16, 0);
+        auto &list = isGlobal ? global : ula;
+        if (std::none_of(list.begin(), list.end(), [&candidate](const auto &item) {
+            return std::memcmp(item.s6_addr, candidate.s6_addr, 8) == 0;
+        })) list.push_back(candidate);
+    }
+    auto &candidates = global.empty() ? ula : global;
+    if (candidates.empty()) return false;
+    std::sort(candidates.begin(), candidates.end(), [](const auto &left, const auto &right) {
+        return std::memcmp(left.s6_addr, right.s6_addr, 8) < 0;
+    });
+    downstream = candidates.front();
+    if (downstream.s6_addr[7] == 0xff) return false;
+    ++downstream.s6_addr[7]; // Match the existing PAN tethering prefix derivation.
+    auto conflicts = [&downstream](const auto &candidate) {
+        return std::memcmp(candidate.s6_addr, downstream.s6_addr, 8) == 0;
+    };
+    if (std::any_of(global.begin(), global.end(), conflicts) || std::any_of(ula.begin(), ula.end(), conflicts)) return false;
+    char buffer[INET6_ADDRSTRLEN]{};
+    if (inet_ntop(AF_INET6, &downstream, buffer, sizeof(buffer)) == nullptr) return false;
+    text = buffer;
     return true;
 }
 }
@@ -67,7 +121,7 @@ bool NearlinkIpv6Runtime::SetToken()
     auto *afSpec = attribute(IFLA_AF_SPEC, nullptr, 0);
     auto *af = attribute(AF_INET6, nullptr, 0);
     in6_addr token{};
-    if (!tokenOwned_) token.s6_addr[15] = 2;
+    if (!tokenOwned_ && !Layer2Token(layer2_, token)) return false;
     attribute(IFLA_INET6_TOKEN, &token, sizeof(token));
     af->rta_len = reinterpret_cast<char *>(&request) + request.header.nlmsg_len - reinterpret_cast<char *>(af);
     afSpec->rta_len = reinterpret_cast<char *>(&request) + request.header.nlmsg_len - reinterpret_cast<char *>(afSpec);
@@ -91,6 +145,8 @@ bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2)
 {
     if (prepared_) return ifindex_ == if_nametoindex(IFACE);
     if (ifindex_ && !Cleanup()) return false;
+    in6_addr token{};
+    if (!Layer2Token(layer2, token)) return false;
     ifindex_ = if_nametoindex(IFACE); layer2_ = layer2;
     if (!ifindex_) return false;
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
@@ -114,50 +170,18 @@ bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2)
 bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding)
 {
     auto now = std::chrono::steady_clock::now();
-    // Read the shared configuration on reconciliation so renumbering remains live.
-    std::ifstream file("/system/etc/communication/netmanager_ext/network_share_config.cfg");
-    std::string prefix, dns, line;
-    bool prefixSeen = false, dnsSeen = false, duplicate = false;
-    while (std::getline(file, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        auto separator = line.find(':'); // IPv6 colons belong to the value.
-        if (separator == std::string::npos) continue;
-        auto key = line.substr(0, separator);
-        auto value = line.substr(separator + 1);
-        if (key == "nearlink_ipv6_prefix") {
-            duplicate |= prefixSeen; prefixSeen = true; prefix = value;
-        } else if (key == "nearlink_ipv6_dns") {
-            duplicate |= dnsSeen; dnsSeen = true; dns = value;
-        }
-    }
-    in6_addr binary{}, resolver{};
-    bool configured = !duplicate && prefixSeen && Prefix(prefix, binary);
-    if (configured && dns.empty()) {
-        // The shared DNS proxy listens on the local gateway address. Keep the
-        // RDNSS endpoint stable without requiring a second per-image address.
+    std::string prefix, dns;
+    in6_addr binary{}, resolver{}, token{};
+    bool configured = DeriveDownstreamPrefix(upstream, binary, prefix) && Layer2Token(layer2_, token);
+    if (configured) {
         resolver = binary;
-        resolver.s6_addr[15] = 1;
+        std::copy(token.s6_addr + 8, token.s6_addr + 16, resolver.s6_addr + 8);
         char defaultDns[INET6_ADDRSTRLEN]{};
         configured = inet_ntop(AF_INET6, &resolver, defaultDns, sizeof(defaultDns)) != nullptr;
         if (configured) dns = defaultDns;
-    } else if (configured) {
-        configured = inet_pton(AF_INET6, dns.c_str(), &resolver) == 1 &&
-            !IN6_IS_ADDR_UNSPECIFIED(&resolver) && !IN6_IS_ADDR_MULTICAST(&resolver) &&
-            !IN6_IS_ADDR_LINKLOCAL(&resolver);
     }
     bool defaultRoute = false;
-    if (upstream && configured) {
-        for (const auto &a : upstream->netAddrList_) {
-            in6_addr onLink{};
-            if (a.family_ != AF_INET6 || inet_pton(AF_INET6, a.address_.c_str(), &onLink) != 1) continue;
-            unsigned bits = std::min<unsigned>(a.prefixlen_, 64);
-            bool overlaps = true;
-            for (unsigned bit = 0; bit < bits; ++bit) {
-                unsigned mask = 0x80 >> (bit % 8);
-                if ((onLink.s6_addr[bit / 8] & mask) != (binary.s6_addr[bit / 8] & mask)) overlaps = false;
-            }
-            if (overlaps) configured = false;
-        }
+    if (upstream != nullptr) {
         for (const auto &r : upstream->routeList_)
             defaultRoute = defaultRoute || (r.destination_.family_ == AF_INET6 && r.destination_.prefixlen_ == 0);
     }
@@ -178,9 +202,7 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
             }
         }
         prefix_ = prefix;
-        binary.s6_addr[15] = 1;
-        char address[INET6_ADDRSTRLEN]{}; inet_ntop(AF_INET6, &binary, address, sizeof(address));
-        gateway_ = address; advertisedAt_ = now;
+        gateway_ = dns; advertisedAt_ = now;
     }
     if (!daemon_ && (!prefix_.empty() || !retired_.empty())) {
         daemon_ = std::make_shared<RouterAdvertisementDaemon>();

@@ -7,7 +7,7 @@ repo = Path(__file__).resolve().parents[2]
 with tempfile.TemporaryDirectory(prefix='p2-s3-contract-') as directory:
     out = Path(directory)
     (out / 'arpa').mkdir()
-    (out / 'arpa/inet.h').write_text('#pragma once\n#include <winsock2.h>\n#include <ws2tcpip.h>\n#undef ERROR\n')
+    (out / 'arpa/inet.h').write_text('#pragma once\n#include <winsock2.h>\n#include <ws2tcpip.h>\n#undef ERROR\nextern "C" int inet_pton(int,const char*,void*);\nextern "C" const char* inet_ntop(int,const void*,char*,size_t);\n')
     (out / 'parcel.h').write_text(r'''
 #pragma once
 #include <cstdint>
