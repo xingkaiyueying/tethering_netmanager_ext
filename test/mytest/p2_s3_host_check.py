@@ -41,7 +41,7 @@ class Parcelable { public: virtual ~Parcelable()=default; virtual bool Marshalli
 namespace OHOS::NetManagerStandard {
 class NearlinkIpv6Runtime { public:
 bool Prepare(bool,const std::string&){return call("ipv6-prepare")==0;}
-bool Advertise(const NetLinkInfo*,bool){return call("ra")==0;}
+bool Advertise(const NetLinkInfo*,bool,bool){return call("ra")==0;}
 bool Cleanup(){return call("ipv6-cleanup")==0;}
 }; }
 ''')
@@ -127,16 +127,42 @@ int main() {
     errors["link-info"]=-7; strcpy(v4.strOptClientId,"192.168.77.3");
     c->OnDhcpSuccess(0,"sleip0",v4); q.Drain();
     assert(net.lastLink.netAddrList_[0].address_=="192.168.77.2" && c->netSupplierId_==supplier);
-    errors.clear(); c->OnDhcpSuccess(0,"sleip0",v4); q.Drain();
+    auto expiry=c->pendingLeaseExpiry_;
+    errors.clear();
+    auto starts=std::count(calls.begin(),calls.end(),"dhcp-start");
+    c->RetryTerminalNetwork();
+    assert(!c->ipv4PublishPending_ && c->leaseExpiry_==expiry);
+    assert(std::count(calls.begin(),calls.end(),"dhcp-start")==starts);
     assert(net.lastLink.netAddrList_[0].address_=="192.168.77.3");
     c->OnDhcpSuccess(0,"sleip0",v4); c->StopTerminal(); q.Drain();
     assert(c->status_.state==NearlinkIpShareState::IDLE && !c->nearlinkStarted_);
     c->OnDhcpSuccess(0,"sleip0",v4); q.Drain();
     assert(c->netSupplierId_==0);
+    errors["link-info"]=-7;
+    assert(c->StartTerminal(peer,3)==0);q.Drain();
+    link.generation=2;link.sequence=1;OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
+    c->OnNearlinkStatus(link);q.Drain();c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();
+    assert(c->ipv4PublishPending_ && !c->retryIpv4_ && c->netSupplierId_==0);
+    expiry=c->pendingLeaseExpiry_;errors.clear();c->RetryTerminalNetwork();
+    assert(c->status_.ipv4.configurationAvailable && c->leaseExpiry_==expiry);
+    errors["link-info"]=-7;c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();
+    // Force a different address so the normal equality fast path is not used.
+    strcpy(v4.strOptClientId,"192.168.77.4");c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();
+    c->pendingLeaseExpiry_=std::chrono::steady_clock::now()-std::chrono::seconds(1);
+    errors.clear();c->RetryTerminalNetwork();assert(!c->ipv4PublishPending_&&c->retryIpv4_);
+    c->StopTerminal();q.Drain();
+    errors["address-add"]=-7;c->ConfigureGateway();
+    assert(c->dnsProxyStarted_ && !c->dhcpServerStarted_ && c->status_.ipv4.hasError);
+    net.hasDefault=true;c->dualStack_=true;c->channelReady_=true;
+    errors.clear();errors["dns-set"]=-7;c->ConfigureUpstream();
+    assert(c->status_.ipv6.hasError && c->status_.ipv6.error.stage=="DNS");
+    assert(!c->status_.ipv6.configurationAvailable);
+    errors.clear();c->ConfigureUpstream();assert(c->status_.ipv6.configurationAvailable);
+    c->Cleanup();net.hasDefault=false;
     auto oldSession=session;
     errors["ipv6-prepare"]=-1;
     assert(c->StartTerminal(peer,3)==0);q.Drain();
-    link.generation=2;link.sequence=1;OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
+    link.generation=3;link.sequence=1;OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
     c->OnNearlinkStatus(link);q.Drain();
     c->OnDhcpSuccess(0,"sleip0",v4,oldSession);q.Drain();assert(c->netSupplierId_==0);
     c->OnDhcpSuccess(0,"sleip0",v4,c->generation_);q.Drain();

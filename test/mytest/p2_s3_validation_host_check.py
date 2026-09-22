@@ -24,8 +24,9 @@ with tempfile.TemporaryDirectory(prefix='p2-s3-validation-') as directory:
 #include <algorithm>
 #include <cassert>
 constexpr int SOCK_CLOEXEC=0,MSG_NOSIGNAL=0,QEURY_TYPE_NETSYS=1;
+#ifndef POLLOUT
 constexpr short POLLOUT=0x0010;
-struct pollfd {int fd;short events;short revents;};
+#endif
 struct queryparam {int qp_netid=0,qp_type=0;};
 inline int activeFamily=0,failFamily=0,closed=0,bindError=0;
 inline size_t offset=0;

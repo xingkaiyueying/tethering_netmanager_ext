@@ -32,7 +32,7 @@
 namespace OHOS::Nearlink {
 class NearlinkIpShareObserver;
 class NearlinkIpShareStatus;
-}
+} // namespace OHOS::Nearlink
 
 namespace OHOS::NetManagerStandard {
 class INearlinkIpShareEventCallback;
@@ -65,11 +65,13 @@ private:
     int32_t Stop(NearlinkIpShareRole expectedRole);
     void HandleNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
     void ConfigureGateway();
+    int32_t ConfigureGatewayIpv4();
     void StartTerminalDhcp();
     void ConfigureUpstream();
     int32_t CleanupUpstream();
     bool IsCurrentSession(uint64_t generation) const;
     void ApplyTerminalNetwork(const DhcpResult &result);
+    void RetryTerminalNetwork();
     void ApplyIpv6Network(const DhcpResult &result);
     bool PublishTerminalNetwork();
     void FamilyFailure(bool ipv6, const std::string &stage, int32_t code, bool withdraw = true);
@@ -88,45 +90,50 @@ private:
     mutable std::mutex mutex_;
     NearlinkIpShareStatus status_;
     std::shared_ptr<OHOS::Nearlink::NearlinkIpShareObserver> nearlinkObserver_;
-    bool initialized_ {false};
-    bool shuttingDown_ {false};
-    bool stopRequested_ {false};
-    std::atomic<uint64_t> generation_ {0};
-    bool gatewayReserved_ {false};
-    bool nearlinkStarted_ {false};
-    bool localInterfaceAdded_ {false};
-    bool localRouteAdded_ {false};
-    bool addressConfigured_ {false};
-    bool dhcpServerStarted_ {false};
-    bool dnsProxyStarted_ {false};
-    bool forwardingEnabled_ {false};
-    bool interfaceForwarding_ {false};
-    bool natEnabled_ {false};
-    bool dhcpClientStarted_ {false};
-    std::chrono::steady_clock::time_point leaseExpiry_ {};
-    uint32_t netSupplierId_ {0};
+    bool initialized_{false};
+    bool shuttingDown_{false};
+    bool stopRequested_{false};
+    std::atomic<uint64_t> generation_{0};
+    bool gatewayReserved_{false};
+    bool nearlinkStarted_{false};
+    bool localInterfaceAdded_{false};
+    bool localRouteAdded_{false};
+    bool addressConfigured_{false};
+    bool dhcpServerStarted_{false};
+    bool dnsProxyStarted_{false};
+    bool dnsUpstreamReady_{false};
+    bool forwardingEnabled_{false};
+    bool interfaceForwarding_{false};
+    bool natEnabled_{false};
+    bool dhcpClientStarted_{false};
+    std::chrono::steady_clock::time_point leaseExpiry_{};
+    uint32_t netSupplierId_{0};
     sptr<INetConnCallback> upstreamCallback_;
-    int32_t upstreamNetId_ {-1};
+    int32_t upstreamNetId_{-1};
     std::string upstreamIface_;
     NetworkShareConfiguration configuration_;
     NearlinkFamilyNetwork families_;
     NetLinkInfo appliedLink_;
+    NetLinkInfo pendingIpv4_;
+    std::chrono::steady_clock::time_point pendingLeaseExpiry_{};
+    bool ipv4PublishPending_{false};
+    bool networkDirty_{false};
     bool supplierAvailable_{false};
     NearlinkIpv6Runtime ipv6Runtime_;
     bool ipv6Prepared_{false};
     void ConfigureGatewayIpv6(const NetLinkInfo *upstream);
-    DhcpL3Ipv6Snapshot ipv6Addresses_ {};
-    std::chrono::steady_clock::time_point ipv6Observed_ {};
-    DhcpResult ipv6Result_ {};
-    uint64_t linkGeneration_ {0}, linkSequence_ {0}, evidenceSequence_ {0};
-    uint32_t interfaceIndex_ {0};
-    bool dualStack_ {false};
+    DhcpL3Ipv6Snapshot ipv6Addresses_{};
+    std::chrono::steady_clock::time_point ipv6Observed_{};
+    DhcpResult ipv6Result_{};
+    uint64_t linkGeneration_{0}, linkSequence_{0}, evidenceSequence_{0};
+    uint32_t interfaceIndex_{0};
+    bool dualStack_{false};
     bool channelReady_{false};
     bool retryIpv4_{false}, ipv6ClientStarted_{false};
     std::chrono::steady_clock::time_point nextDhcpRetry_{};
     std::array<uint8_t, 6> clientKey_{};
     void RetryTerminalDhcp();
-    bool maintenancePending_ {false};
+    bool maintenancePending_{false};
 };
 } // namespace OHOS::NetManagerStandard
 #endif // NETMANAGER_EXT_NEARLINK_IPSHARE_CONTROLLER_H

@@ -6,7 +6,7 @@ import tempfile
 repo = Path(__file__).resolve().parents[2]
 src = repo / 'services/networksharemanager'
 production = (src / 'src/nearlink_ipv6_runtime.cpp').read_text()
-prefix = production[production.index('bool Prefix('):production.index('bool NearlinkIpv6Runtime::Set(')]
+prefix = production[production.index('constexpr const char *IFACE'):production.index('bool NearlinkIpv6Runtime::Set(')]
 advertise = production[production.index('bool NearlinkIpv6Runtime::Advertise('):production.index('bool NearlinkIpv6Runtime::Cleanup(')]
 with tempfile.TemporaryDirectory(prefix='p2-s3-gateway-') as directory:
     out = Path(directory)
@@ -54,6 +54,8 @@ struct Route {Address destination_;};struct NetLinkInfo {std::vector<Address> ne
 #include <chrono>
 #include <map>
 #include <algorithm>
+#include <array>
+#include <cerrno>
 #include <fstream>
 #include <cassert>
 #include <cstring>
@@ -64,14 +66,14 @@ struct Route {Address destination_;};struct NetLinkInfo {std::vector<Address> ne
 #undef private
 namespace OHOS::NetManagerStandard {
 class NetsysController {public:
-inline static std::vector<std::string> removed;
+inline static std::vector<std::string> removed;inline static bool failRemove=false;
 static NetsysController &GetInstance(){static NetsysController value;return value;}
 int NetworkAddRoute(int,const char*,const std::string&,const char*){return 0;}
-int NetworkRemoveRoute(int,const char*,const std::string&s,const char*){removed.push_back(s);return 0;}
-int DelInterfaceAddress(const char*,const std::string&s,int){removed.push_back(s);return 0;}
+int NetworkRemoveRoute(int,const char*,const std::string&s,const char*){if(failRemove)return -1;removed.push_back(s);return 0;}
+int DelInterfaceAddress(const char*,const std::string&s,int){if(failRemove)return -1;removed.push_back(s);return 0;}
 };
 bool NearlinkIpv6Runtime::AddAddress(const std::string &a){addresses_.push_back(a);return true;}
-namespace {constexpr const char* IFACE="sleip0";
+namespace {
 ''' + prefix + advertise + r'''
 }
 using namespace OHOS::NetManagerStandard;
@@ -98,6 +100,21 @@ int main(){
  assert(runtime.Advertise(&up,true));assert(runtime.addresses_.size()==2);
  runtime.retired_[0].until=std::chrono::steady_clock::now()-std::chrono::seconds(1);
  assert(runtime.Advertise(&up,true));assert(runtime.retired_.empty());assert(runtime.addresses_.size()==1);
+ // A fifth prefix must withdraw old DNS/default routing even while all four slots are retained.
+ for(const char* address : {"2001:db8:10:40::1","2001:db8:10:50::1","2001:db8:10:60::1","2001:db8:10:70::1"}) {
+  up.netAddrList_[0].address_=address;runtime.Advertise(&up,true);
+ }
+ assert(runtime.retired_.size()==4 && runtime.prefix_.empty());
+ assert(runtime.daemon_->params.routerLifetime_==0 && runtime.daemon_->params.dnses_.empty());
+ runtime.Advertise(nullptr,false);assert(runtime.daemon_->params.routerLifetime_==0);
+ for(auto &old:runtime.retired_)old.until=std::chrono::steady_clock::now()-std::chrono::seconds(1);
+ NetsysController::failRemove=true;runtime.Advertise(&up,true);
+ assert(!runtime.retired_.empty()); // failed resources are retained for cleanup, never silently dropped
+ NetsysController::failRemove=false;runtime.Advertise(&up,true);
+ assert(runtime.retired_.empty() && runtime.prefix_=="2001:db8:10:71::");
+ runtime.Advertise(&up,true,false);
+ assert(runtime.daemon_->params.dnses_.empty() && runtime.daemon_->params.rdnssLifetime_==0);
+ runtime.Advertise(&up,true,true);assert(runtime.daemon_->params.dnses_.size()==1);
  NearlinkIpv6Runtime collision;collision.ifindex_=7;collision.layer2_=runtime.layer2_;
  NetLinkInfo adjacent;adjacent.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:20::1"});
  adjacent.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:21::1"});
