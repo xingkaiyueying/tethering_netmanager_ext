@@ -1258,6 +1258,10 @@ void NearlinkIpShareController::ApplyIpv6Network(const DhcpResult &result)
         entry.address_ = text;
         next.dnsList_.push_back(entry);
     }
+    if (families_.ipv6 == next) {
+        ipv6Result_ = result;
+        return;
+    }
     auto previous = families_.ipv6;
     families_.ipv6 = next;
     ipv6Result_ = result;

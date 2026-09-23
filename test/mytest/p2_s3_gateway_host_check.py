@@ -69,7 +69,7 @@ namespace OHOS::NetManagerStandard {
 class NetsysController {public:
 inline static std::vector<std::string> removed;inline static bool failRemove=false;
 static NetsysController &GetInstance(){static NetsysController value;return value;}
-int NetworkAddRoute(int,const char*,const std::string&,const char*){return 0;}
+int NetworkAddRoute(int,const char*,const std::string&,const char* nextHop){return strcmp(nextHop,"::")==0?-EINVAL:0;}
 int NetworkRemoveRoute(int,const char*,const std::string&s,const char*){if(failRemove)return -1;removed.push_back(s);return 0;}
 int DelInterfaceAddress(const char*,const std::string&s,int){if(failRemove)return -1;removed.push_back(s);return 0;}
 };

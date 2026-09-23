@@ -422,7 +422,7 @@ void NearlinkIpv6Runtime::ExpireRetiredPrefixes(std::chrono::steady_clock::time_
         bool released = true;
         if (it->route) {
             if (RouteRemoved(NetsysController::GetInstance().NetworkRemoveRoute(LOCAL_NETWORK_ID, IFACE,
-                                                                                it->prefix + "/64", "::"))) {
+                                                                                it->prefix + "/64", ""))) {
                 it->route = false;
             } else {
                 released = false;
@@ -450,8 +450,8 @@ bool NearlinkIpv6Runtime::ReconcileGatewayAddress(std::chrono::steady_clock::tim
         gatewayAddressOwned_ = AddAddress(gateway_);
     }
     if (gatewayAddressOwned_ && !routeOwned_) {
-        routeOwned_ =
-            NetsysController::GetInstance().NetworkAddRoute(LOCAL_NETWORK_ID, IFACE, prefix_ + "/64", "::") == 0;
+        int32_t ret = NetsysController::GetInstance().NetworkAddRoute(LOCAL_NETWORK_ID, IFACE, prefix_ + "/64", "");
+        routeOwned_ = ret == 0 || ret == -EEXIST;
     }
     bool usable = false;
     std::ifstream kernel("/proc/net/if_inet6");
@@ -484,7 +484,7 @@ bool NearlinkIpv6Runtime::Cleanup()
     for (auto &old : retired_) {
         if (old.route) {
             if (RouteRemoved(NetsysController::GetInstance().NetworkRemoveRoute(LOCAL_NETWORK_ID, IFACE,
-                                                                                old.prefix + "/64", "::"))) {
+                                                                                old.prefix + "/64", ""))) {
                 old.route = false;
             } else {
                 ok = false;
@@ -493,7 +493,7 @@ bool NearlinkIpv6Runtime::Cleanup()
     }
     if (routeOwned_) {
         if (RouteRemoved(
-                NetsysController::GetInstance().NetworkRemoveRoute(LOCAL_NETWORK_ID, IFACE, prefix_ + "/64", "::"))) {
+                NetsysController::GetInstance().NetworkRemoveRoute(LOCAL_NETWORK_ID, IFACE, prefix_ + "/64", ""))) {
             routeOwned_ = false;
         } else {
             ok = false;
