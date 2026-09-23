@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cctype>
 #include <cstring>
 #include <cstdio>
 #include <fstream>
@@ -89,15 +90,11 @@ bool DeriveDownstreamPrefix(const NetLinkInfo *upstream, in6_addr &downstream, s
     }
     std::vector<in6_addr> global;
     std::vector<in6_addr> ula;
-    for (const auto &address : upstream->netAddrList_) {
-        in6_addr candidate{};
-        if (address.family_ != AF_INET6 || inet_pton(AF_INET6, address.address_.c_str(), &candidate) != 1) {
-            continue;
-        }
+    auto addCandidate = [&global, &ula](in6_addr candidate) {
         bool isGlobal = (candidate.s6_addr[0] & 0xe0) == 0x20;
         bool isUla = (candidate.s6_addr[0] & 0xfe) == 0xfc;
         if (!isGlobal && !isUla) {
-            continue;
+            return;
         }
         std::fill(candidate.s6_addr + 8, candidate.s6_addr + 16, 0);
         auto &list = isGlobal ? global : ula;
@@ -105,6 +102,34 @@ bool DeriveDownstreamPrefix(const NetLinkInfo *upstream, in6_addr &downstream, s
                 return std::memcmp(item.s6_addr, candidate.s6_addr, 8) == 0;
             })) {
             list.push_back(candidate);
+        }
+    };
+    for (const auto &address : upstream->netAddrList_) {
+        in6_addr candidate{};
+        if (address.family_ == AF_INET6 && address.prefixlen_ == 64 &&
+            inet_pton(AF_INET6, address.address_.c_str(), &candidate) == 1) {
+            addCandidate(candidate);
+        }
+    }
+    if (global.empty() && ula.empty() && !upstream->ifaceName_.empty() && upstream->ifaceName_ != IFACE) {
+        // Some upstream providers omit IPv6 addresses from NetLinkInfo. Consult only
+        // the selected interface's current, usable /64 address; never scan other links.
+        std::ifstream kernel("/proc/net/if_inet6");
+        std::string hex, iface;
+        unsigned index, length, scope, flags;
+        while (kernel >> hex >> std::hex >> index >> length >> scope >> flags >> iface) {
+            if (iface != upstream->ifaceName_ || length != 64 || scope != 0 ||
+                (flags & UNUSABLE_ADDRESS_FLAGS) || hex.size() != 32 ||
+                !std::all_of(hex.begin(), hex.end(), [](unsigned char c) { return std::isxdigit(c); })) {
+                continue;
+            }
+            in6_addr candidate{};
+            for (size_t i = 0; i < 16; ++i) {
+                unsigned byte = 0;
+                (void)std::sscanf(hex.c_str() + i * 2, "%2x", &byte);
+                candidate.s6_addr[i] = static_cast<uint8_t>(byte);
+            }
+            addCandidate(candidate);
         }
     }
     auto &candidates = global.empty() ? ula : global;

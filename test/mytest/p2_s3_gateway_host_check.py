@@ -7,6 +7,7 @@ repo = Path(__file__).resolve().parents[2]
 src = repo / 'services/networksharemanager'
 production = (src / 'src/nearlink_ipv6_runtime.cpp').read_text()
 prefix = production[production.index('constexpr const char *IFACE'):production.index('bool NearlinkIpv6Runtime::Set(')]
+prefix = prefix.replace('/proc/net/if_inet6', 'if_inet6_upstream.txt')
 advertise = production[production.index('bool NearlinkIpv6Runtime::Advertise('):production.index('bool NearlinkIpv6Runtime::Cleanup(')]
 with tempfile.TemporaryDirectory(prefix='p2-s3-gateway-') as directory:
     out = Path(directory)
@@ -44,7 +45,7 @@ void BuildNewRa(const RaParams&p){params=p;}bool AdvertiseNow(){sent.push_back(p
 #include <vector>
 namespace OHOS::NetManagerStandard {
 struct Address {int family_=0;unsigned prefixlen_=0;std::string address_;};
-struct Route {Address destination_;};struct NetLinkInfo {std::vector<Address> netAddrList_;std::vector<Route> routeList_;};
+struct Route {Address destination_;};struct NetLinkInfo {std::string ifaceName_;std::vector<Address> netAddrList_;std::vector<Route> routeList_;};
 }
 ''')
     put('nearlink_ipv6_runtime.h', (src / 'include/nearlink_ipv6_runtime.h').read_text())
@@ -122,6 +123,13 @@ int main(){
  in6_addr ula{};std::string ulaText;NetLinkInfo privateUp;
  privateUp.netAddrList_.push_back({AF_INET6,64,"fd77:77:1::99"});
  assert(DeriveDownstreamPrefix(&privateUp,ula,ulaText)&&ulaText=="fd77:77:1:1::");
+ NetLinkInfo cellular;cellular.ifaceName_="rmnet0";
+ {std::ofstream f("if_inet6_upstream.txt");
+  f<<"240e04041a01463235590ac22965dfec 0a 40 00 80 rmnet0\n";
+  f<<"20010db8009900010000000000000001 0b 40 00 80 wlan0\n";}
+ in6_addr recovered{};std::string recoveredText;
+ assert(DeriveDownstreamPrefix(&cellular,recovered,recoveredText));
+ assert(recoveredText=="240e:404:1a01:4633::");
  puts("gateway: automatic PAN-style prefix, L2 EUI-64, automatic RDNSS, collision guard, renumber/withdrawal PASS");
 }
 ''')

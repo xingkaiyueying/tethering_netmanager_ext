@@ -97,6 +97,7 @@ int main() {
     c->OnDhcpSuccess(0,"sleip0",v6); q.Drain();
     assert(net.available && net.lastLink.netAddrList_.size()==1);
     assert(c->status_.ipv6.configurationAvailable && !c->status_.ipv6.externalAvailable);
+    { Parcel parcel; assert(c->status_.Marshalling(parcel)); }
     auto supplier=c->netSupplierId_;
     auto session=c->generation_.load();
     c->OnDhcpFailure(0x10001,"sleip0","dhcpv6 failed",session); q.Drain();
@@ -109,6 +110,7 @@ int main() {
     c->OnDhcpSuccess(0,"sleip0",v4); q.Drain();
     assert(net.lastLink.netAddrList_.size()==2 && net.lastLink.routeList_.size()==4);
     assert(c->netSupplierId_==supplier && net.registrations==1);
+    { Parcel parcel; assert(c->status_.Marshalling(parcel)); }
     c->OnDhcpFailure(4,"sleip0","renew"); q.Drain();
     assert(net.lastLink.netAddrList_.size()==2);
     c->OnDhcpFailure(1,"sleip0","lost"); q.Drain();

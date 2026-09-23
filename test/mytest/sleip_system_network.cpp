@@ -28,10 +28,18 @@ extern "C" int SleipSystemNetwork(int argc, char **argv)
         else if (strcmp(argv[3], "A") == 0) ret = client.StopNearlinkTerminal();
     } else if (argc == 3 && strcmp(argv[2], "status") == 0) {
         NearlinkIpShareStatus status;
+        fprintf(stderr, "STATUS_STAGE=before_share_ipc\n");
+        fflush(stderr);
         ret = client.GetNearlinkIpShareStatus(status);
+        fprintf(stderr, "STATUS_STAGE=after_share_ipc ret=%d\n", ret);
+        fflush(stderr);
         if (ret == 0) {
             NetHandle selected;
+            fprintf(stderr, "STATUS_STAGE=before_default_net\n");
+            fflush(stderr);
             int32_t defaultRet = NetConnClient::GetInstance().GetDefaultNet(selected);
+            fprintf(stderr, "STATUS_STAGE=after_default_net ret=%d\n", defaultRet);
+            fflush(stderr);
             printf("state=%d mode=%d generation=%llu sequence=%llu netId=%d defaultRet=%d defaultNetId=%d\n",
                 static_cast<int>(status.state), status.selectedMode,
                 static_cast<unsigned long long>(status.generation), static_cast<unsigned long long>(status.sequence),
