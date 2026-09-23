@@ -87,6 +87,8 @@ private:
     static bool ParsePeerAddress(const std::string &address, std::array<uint8_t, 6> &bytes);
     static std::string MaskPeer(const std::string &address);
 
+    // Serialize registration with teardown without holding the state lock across IPC callbacks.
+    std::mutex initMutex_;
     mutable std::mutex mutex_;
     NearlinkIpShareStatus status_;
     std::shared_ptr<OHOS::Nearlink::NearlinkIpShareObserver> nearlinkObserver_;

@@ -171,8 +171,11 @@ public:
     int StartNearlinkTerminalWithMode(const std::string &peer, int) { return StartTerminal(peer); }
     int observerRegistrations=0;
     bool serverHasObserver=false;
-    int RegisterObserver(std::shared_ptr<NearlinkIpShareObserver>) {
-        ++observerRegistrations; serverHasObserver=true; return 0;
+    int RegisterObserver(std::shared_ptr<NearlinkIpShareObserver> observer) {
+        ++observerRegistrations; serverHasObserver=true;
+        NearlinkIpShareStatus current;
+        if (GetStatus(current) == 0) observer->OnStatusChanged(current);
+        return 0;
     }
     int UnregisterObserver() { return 0; }
     int StartGateway(const std::string &) { return call("nearlink-start"); }

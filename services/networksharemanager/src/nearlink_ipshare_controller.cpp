@@ -282,25 +282,37 @@ std::shared_ptr<NearlinkIpShareController> NearlinkIpShareController::GetInstanc
 
 bool NearlinkIpShareController::Init()
 {
-    std::lock_guard lock(mutex_);
-    if (shuttingDown_) {
-        return false;
-    }
-    if (nearlinkObserver_ == nullptr) {
-        nearlinkObserver_ =
-            std::make_shared<NearlinkObserver>(std::weak_ptr<NearlinkIpShareController>(shared_from_this()));
+    std::lock_guard initLock(initMutex_);
+    std::shared_ptr<OHOS::Nearlink::NearlinkIpShareObserver> observer;
+    {
+        std::lock_guard lock(mutex_);
+        if (shuttingDown_) {
+            return false;
+        }
+        if (nearlinkObserver_ == nullptr) {
+            nearlinkObserver_ =
+                std::make_shared<NearlinkObserver>(std::weak_ptr<NearlinkIpShareController>(shared_from_this()));
+        }
+        observer = nearlinkObserver_;
     }
     // The NearLink profile service is recreated when the adapter is toggled.
     // Its observer slot is process-local, while this controller remains alive,
     // so refresh the registration on every idempotent initialization.
-    int32_t ret = OHOS::Nearlink::NearlinkIpShareClient::GetInstance().RegisterObserver(nearlinkObserver_);
+    // RegisterObserver synchronously replays GetStatus through OnNearlinkStatus,
+    // which also takes mutex_. Never hold the state lock across this call.
+    int32_t ret = OHOS::Nearlink::NearlinkIpShareClient::GetInstance().RegisterObserver(observer);
     if (ret != 0) {
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Init] observer registration failed code=%{public}d", ret);
         return false;
     }
-    initialized_ = true;
+    uint64_t generation;
+    {
+        std::lock_guard lock(mutex_);
+        initialized_ = true;
+        generation = generation_.load();
+    }
     auto self = shared_from_this();
-    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, generation = generation_.load()]() {
+    NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, generation]() {
         if (!self->IsCurrentSession(generation)) {
             return;
         }
@@ -315,6 +327,7 @@ bool NearlinkIpShareController::Init()
 
 void NearlinkIpShareController::Uninit()
 {
+    std::lock_guard initLock(initMutex_);
     {
         std::lock_guard lock(mutex_);
         shuttingDown_ = true;
