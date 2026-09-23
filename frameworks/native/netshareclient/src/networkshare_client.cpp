@@ -325,7 +325,18 @@ int32_t NetworkShareClient::StopNearlinkTerminal()
 int32_t NetworkShareClient::GetNearlinkIpShareStatus(NearlinkIpShareStatus &status)
 {
     auto proxy = GetProxy();
-    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->GetNearlinkIpShareStatus(status);
+    if (proxy == nullptr) {
+        return NETMANAGER_EXT_ERR_GET_PROXY_FAIL;
+    }
+    // The generated proxy uses Parcelable's virtual entry points. Keep the
+    // parcel object in this CFI-enabled library instead of dispatching through
+    // a vtable emitted by an executable or another shared library.
+    NearlinkIpShareStatus reply;
+    int32_t ret = proxy->GetNearlinkIpShareStatus(reply);
+    if (ret == NETMANAGER_SUCCESS) {
+        status = reply;
+    }
+    return ret;
 }
 
 int32_t NetworkShareClient::RegisterNearlinkIpShareEvent(sptr<INearlinkIpShareEventCallback> callback)
