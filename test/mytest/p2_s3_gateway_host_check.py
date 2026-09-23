@@ -126,6 +126,7 @@ int main(){
  NetLinkInfo cellular;cellular.ifaceName_="rmnet0";
  {std::ofstream f("if_inet6_upstream.txt");
   f<<"240e04041a01463235590ac22965dfec 0a 40 00 80 rmnet0\n";
+  f<<"20010db8009800010000000000000001 0a 40 00 20 rmnet0\n";
   f<<"20010db8009900010000000000000001 0b 40 00 80 wlan0\n";}
  in6_addr recovered{};std::string recoveredText;
  assert(DeriveDownstreamPrefix(&cellular,recovered,recoveredText));

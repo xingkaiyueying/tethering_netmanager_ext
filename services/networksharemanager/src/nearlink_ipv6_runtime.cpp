@@ -36,6 +36,7 @@ constexpr int PREFIX_VALID_SECONDS = 300;
 constexpr int PREFIX_PREFERRED_SECONDS = 180;
 constexpr int LOCAL_NETWORK_ID = 99;
 constexpr unsigned UNUSABLE_ADDRESS_FLAGS = 0x04 | 0x08 | 0x40;
+constexpr unsigned UNUSABLE_UPSTREAM_FLAGS = UNUSABLE_ADDRESS_FLAGS | 0x20; // Deprecated source address.
 bool RouteRemoved(int32_t result)
 {
     return result == 0 || result == -ESRCH;
@@ -119,7 +120,7 @@ bool DeriveDownstreamPrefix(const NetLinkInfo *upstream, in6_addr &downstream, s
         unsigned index, length, scope, flags;
         while (kernel >> hex >> std::hex >> index >> length >> scope >> flags >> iface) {
             if (iface != upstream->ifaceName_ || length != 64 || scope != 0 ||
-                (flags & UNUSABLE_ADDRESS_FLAGS) || hex.size() != 32 ||
+                (flags & UNUSABLE_UPSTREAM_FLAGS) || hex.size() != 32 ||
                 !std::all_of(hex.begin(), hex.end(), [](unsigned char c) { return std::isxdigit(c); })) {
                 continue;
             }
