@@ -24,8 +24,11 @@
 #include <cstdio>
 #include <fstream>
 #include <linux/if_link.h>
+#include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 namespace OHOS::NetManagerStandard {
@@ -281,6 +284,74 @@ bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2)
     prepared_ = AddAddress(gateway ? "fe80::1" : "fe80::2");
     return prepared_;
 }
+bool HasIpv6DefaultRouteOnInterface(const std::string &iface)
+{
+    unsigned index = if_nametoindex(iface.c_str());
+    if (index == 0) {
+        return false;
+    }
+    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (fd < 0) {
+        return false;
+    }
+    timeval timeout{1, 0};
+    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    struct {
+        nlmsghdr header;
+        rtmsg route;
+    } request{};
+    request.header.nlmsg_len = NLMSG_LENGTH(sizeof(rtmsg));
+    request.header.nlmsg_type = RTM_GETROUTE;
+    request.header.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    request.header.nlmsg_seq = 1;
+    request.route.rtm_family = AF_INET6;
+    sockaddr_nl kernel{};
+    kernel.nl_family = AF_NETLINK;
+    bool sent = sendto(fd, &request, request.header.nlmsg_len, 0, reinterpret_cast<sockaddr *>(&kernel),
+                       sizeof(kernel)) == static_cast<ssize_t>(request.header.nlmsg_len);
+    bool found = false;
+    bool done = false;
+    while (sent && !done) {
+        alignas(nlmsghdr) char reply[8192]{};
+        ssize_t size = recv(fd, reply, sizeof(reply), 0);
+        if (size <= 0) {
+            break;
+        }
+        int remaining = static_cast<int>(size);
+        for (auto *header = reinterpret_cast<nlmsghdr *>(reply); NLMSG_OK(header, remaining);
+             header = NLMSG_NEXT(header, remaining)) {
+            if (header->nlmsg_type == NLMSG_DONE || header->nlmsg_type == NLMSG_ERROR) {
+                done = true;
+                break;
+            }
+            if (header->nlmsg_type != RTM_NEWROUTE || header->nlmsg_len < NLMSG_LENGTH(sizeof(rtmsg))) {
+                continue;
+            }
+            auto *route = reinterpret_cast<rtmsg *>(NLMSG_DATA(header));
+            if (route->rtm_family != AF_INET6 || route->rtm_dst_len != 0 || route->rtm_src_len != 0 ||
+                route->rtm_type != RTN_UNICAST) {
+                continue;
+            }
+            int attributes = RTM_PAYLOAD(header);
+            for (auto *attr = RTM_RTA(route); RTA_OK(attr, attributes); attr = RTA_NEXT(attr, attributes)) {
+                uint32_t outputIndex = 0;
+                if (attr->rta_type == RTA_OIF && RTA_PAYLOAD(attr) >= sizeof(outputIndex)) {
+                    memcpy(&outputIndex, RTA_DATA(attr), sizeof(outputIndex));
+                }
+                if (outputIndex == index) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) {
+                done = true;
+                break;
+            }
+        }
+    }
+    close(fd);
+    return found;
+}
 bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding, bool dnsReady)
 {
     auto now = std::chrono::steady_clock::now();
@@ -301,6 +372,10 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
     if (upstream != nullptr) {
         for (const auto &r : upstream->routeList_) {
             defaultRoute = defaultRoute || (r.destination_.family_ == AF_INET6 && r.destination_.prefixlen_ == 0);
+        }
+        if (!defaultRoute && !upstream->ifaceName_.empty()) {
+            // Cellular link properties can omit a route already installed in the network's policy table.
+            defaultRoute = HasIpv6DefaultRouteOnInterface(upstream->ifaceName_);
         }
     }
     if (!configured) {

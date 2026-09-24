@@ -75,7 +75,13 @@ int DelInterfaceAddress(const char*,const std::string&s,int){if(failRemove)retur
 };
 bool NearlinkIpv6Runtime::AddAddress(const std::string &a){addresses_.push_back(a);return true;}
 namespace {
-''' + prefix + advertise + r'''
+''' + prefix + r'''
+std::string routedInterface;
+bool HasIpv6DefaultRouteOnInterface(const std::string &iface)
+{
+    return iface == routedInterface;
+}
+''' + advertise + r'''
 }
 using namespace OHOS::NetManagerStandard;
 int main(){
@@ -131,6 +137,19 @@ int main(){
  in6_addr recovered{};std::string recoveredText;
  assert(DeriveDownstreamPrefix(&cellular,recovered,recoveredText));
  assert(recoveredText=="240e:404:1a01:4633::");
+ NearlinkIpv6Runtime missingRoute;missingRoute.ifindex_=7;missingRoute.layer2_="02:11:22:33:44:55";
+ routedInterface="rmnet0";
+ missingRoute.Advertise(&cellular,true);
+ assert(missingRoute.daemon_->params.routerLifetime_==180);
+ NetLinkInfo wifi=cellular;wifi.ifaceName_="wlan0";
+ missingRoute.Advertise(&wifi,true);
+ assert(missingRoute.daemon_->params.routerLifetime_==0); // Another connected interface is not the selected upstream.
+ routedInterface="wlan0";
+ missingRoute.Advertise(&wifi,true);
+ assert(missingRoute.daemon_->params.routerLifetime_==180);
+ routedInterface.clear();
+ missingRoute.Advertise(&cellular,true);
+ assert(missingRoute.daemon_->params.routerLifetime_==0);
  puts("gateway: automatic PAN-style prefix, L2 EUI-64, automatic RDNSS, collision guard, renumber/withdrawal PASS");
 }
 ''')
