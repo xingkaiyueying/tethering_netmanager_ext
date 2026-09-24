@@ -26,6 +26,10 @@ public:
     void ParseParams(napi_value *params, size_t paramsCount);
 
     const std::string &GetPeerAddress() const;
+    int32_t GetMode() const;
+    bool HasMode() const;
+    void SetCapabilities(const NearlinkIpShareCapabilities &capabilities);
+    const NearlinkIpShareCapabilities &GetCapabilities() const;
     void SetSupported(bool supported);
     bool IsSupported() const;
     void SetStatus(const NearlinkIpShareStatus &status);
@@ -33,6 +37,9 @@ public:
 
 private:
     std::string peerAddress_;
+    int32_t mode_ {1};
+    bool hasMode_ {false};
+    NearlinkIpShareCapabilities capabilities_;
     bool supported_ {false};
     NearlinkIpShareStatus status_;
 };

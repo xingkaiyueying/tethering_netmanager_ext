@@ -26,6 +26,36 @@ declare namespace sharing {
   type NetHandle = connection.NetHandle;
 
   export type NearlinkIpShareRole = 'NONE' | 'GATEWAY' | 'TERMINAL';
+  export type NearlinkIpShareMode = 'IPV4' | 'DUAL_STACK';
+  export interface NearlinkIpShareStartOptions { mode: NearlinkIpShareMode; }
+  export interface NearlinkIpShareCapabilities {
+    identifierPresent: boolean;
+    discoveryState: number;
+    localModes: NearlinkIpShareMode[];
+    peerModes: NearlinkIpShareMode[];
+    peerCapabilityKnown: boolean;
+  }
+  export interface NearlinkIpShareAddress {
+    address: string; prefixLength: number; scopeId: number; origin: number; dadState: number;
+    preferredLifetime: number; validLifetime: number;
+  }
+  export interface NearlinkIpShareRoute {
+    destination: string; gateway: string; prefixLength: number; scopeId: number;
+    lifetime: number; lifetimeKnown: boolean;
+  }
+  export interface NearlinkIpShareDns {
+    address: string; transportFamily: number; source: number; lifetime: number; lifetimeKnown: boolean;
+  }
+  export interface NearlinkIpShareError {
+    plane: number; stage: string; family: number; code: number; retryable: boolean;
+  }
+  export interface NearlinkIpShareFamilyStatus {
+    phase: 'DISABLED' | 'CONFIGURING' | 'AVAILABLE' | 'FAILED';
+    configurationAvailable: boolean; externalAvailable: boolean;
+    validation: 'UNKNOWN' | 'CHECKING' | 'VALIDATED' | 'FAILED';
+    addresses: NearlinkIpShareAddress[]; routes: NearlinkIpShareRoute[]; dns: NearlinkIpShareDns[];
+    error?: NearlinkIpShareError;
+  }
 
   export type NearlinkIpShareState =
     'IDLE' | 'STARTING' | 'DISCOVERING' | 'CONFIGURING' | 'IFACE_READY' | 'CHANNEL_READY' |
@@ -41,13 +71,24 @@ declare namespace sharing {
     hasUpstream: boolean;
     errorStage: string;
     errorCode: number;
+    contextId: string;
+    generation: string;
+    sequence: string;
+    requestedMode: NearlinkIpShareMode;
+    selectedMode?: NearlinkIpShareMode;
+    fallbackReason?: string;
+    netId?: number;
+    serviceReady: boolean;
+    ipv4: NearlinkIpShareFamilyStatus;
+    ipv6: NearlinkIpShareFamilyStatus;
   }
 
   /** Promise resolution means that the request was accepted; observe or query status for completion. */
   function isNearlinkIpShareSupported(peerAddress: string): Promise<boolean>;
-  function startNearlinkGateway(peerAddress: string): Promise<void>;
+  function getNearlinkIpShareCapabilities(peerAddress: string): Promise<NearlinkIpShareCapabilities>;
+  function startNearlinkGateway(peerAddress: string, options?: NearlinkIpShareStartOptions): Promise<void>;
   function stopNearlinkGateway(): Promise<void>;
-  function startNearlinkTerminal(gatewayAddress: string): Promise<void>;
+  function startNearlinkTerminal(gatewayAddress: string, options?: NearlinkIpShareStartOptions): Promise<void>;
   function stopNearlinkTerminal(): Promise<void>;
   function getNearlinkIpShareStatus(): Promise<NearlinkIpShareStatus>;
 

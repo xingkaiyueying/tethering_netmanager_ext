@@ -51,6 +51,7 @@ constexpr const char *FUNCTION_GET_STATS_RX_BYTES = "getStatsRxBytes";
 constexpr const char *FUNCTION_GET_STATS_TX_BYTES = "getStatsTxBytes";
 constexpr const char *FUNCTION_GET_STATS_TOTAL_BYTES = "getStatsTotalBytes";
 constexpr const char *FUNCTION_IS_NEARLINK_IPSHARE_SUPPORTED = "isNearlinkIpShareSupported";
+constexpr const char *FUNCTION_GET_NEARLINK_IPSHARE_CAPABILITIES = "getNearlinkIpShareCapabilities";
 constexpr const char *FUNCTION_START_NEARLINK_GATEWAY = "startNearlinkGateway";
 constexpr const char *FUNCTION_STOP_NEARLINK_GATEWAY = "stopNearlinkGateway";
 constexpr const char *FUNCTION_START_NEARLINK_TERMINAL = "startNearlinkTerminal";
@@ -148,6 +149,12 @@ napi_value IsNearlinkIpShareSupported(napi_env env, napi_callback_info info)
         nullptr, NearlinkIpShareAsyncWork::ExecIsSupported, NearlinkIpShareAsyncWork::SupportedCallback);
 }
 
+napi_value GetNearlinkIpShareCapabilities(napi_env env, napi_callback_info info)
+{
+    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_GET_NEARLINK_IPSHARE_CAPABILITIES,
+        nullptr, NearlinkIpShareAsyncWork::ExecGetCapabilities, NearlinkIpShareAsyncWork::CapabilitiesCallback);
+}
+
 napi_value StartNearlinkGateway(napi_env env, napi_callback_info info)
 {
     return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_START_NEARLINK_GATEWAY,
@@ -243,6 +250,8 @@ napi_value InitNetShareModule(napi_env env, napi_value exports)
                                     DECLARE_NAPI_FUNCTION(FUNCTION_GET_STATS_TOTAL_BYTES, GetStatsTotalBytes),
                                     DECLARE_NAPI_FUNCTION(FUNCTION_IS_NEARLINK_IPSHARE_SUPPORTED,
                                                           IsNearlinkIpShareSupported),
+                                    DECLARE_NAPI_FUNCTION(FUNCTION_GET_NEARLINK_IPSHARE_CAPABILITIES,
+                                                          GetNearlinkIpShareCapabilities),
                                     DECLARE_NAPI_FUNCTION(FUNCTION_START_NEARLINK_GATEWAY, StartNearlinkGateway),
                                     DECLARE_NAPI_FUNCTION(FUNCTION_STOP_NEARLINK_GATEWAY, StopNearlinkGateway),
                                     DECLARE_NAPI_FUNCTION(FUNCTION_START_NEARLINK_TERMINAL, StartNearlinkTerminal),
