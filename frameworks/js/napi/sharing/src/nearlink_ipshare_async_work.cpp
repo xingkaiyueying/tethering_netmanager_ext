@@ -24,6 +24,13 @@
 namespace OHOS::NetManagerStandard {
 bool NearlinkIpShareAsyncWork::Execute(NearlinkIpShareContext *context, Operation operation)
 {
+    if (((operation == Operation::SUPPORT || operation == Operation::CAPABILITIES) &&
+        (context->HasMode() || context->GetPeerAddress().empty())) ||
+        ((operation == Operation::STOP_GATEWAY || operation == Operation::STOP_TERMINAL ||
+            operation == Operation::GET_STATUS) && !context->GetPeerAddress().empty())) {
+        context->SetErrorCode(NETMANAGER_EXT_ERR_PARAMETER_ERROR);
+        return false;
+    }
     auto client = DelayedSingleton<NetworkShareClient>::GetInstance();
     int32_t ret = NETMANAGER_EXT_ERR_PARAMETER_ERROR;
     switch (operation) {
