@@ -299,7 +299,8 @@ int32_t CheckNearlinkIpSharePermission()
     if (!NetManagerPermission::IsSystemCaller()) {
         return NETMANAGER_EXT_ERR_NOT_SYSTEM_CALL;
     }
-    return NetManagerPermission::CheckPermission(Permission::CONNECTIVITY_INTERNAL) ?
+    return NetManagerPermission::CheckPermission(Permission::CONNECTIVITY_INTERNAL) &&
+        NetManagerPermission::CheckPermission("ohos.permission.ACCESS_NEARLINK") ?
         NETMANAGER_EXT_SUCCESS : NETMANAGER_EXT_ERR_PERMISSION_DENIED;
 }
 }
