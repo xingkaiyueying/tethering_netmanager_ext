@@ -28,6 +28,7 @@
       "OHOS::NetManagerStandard::NetworkShareClient::GetStatsTotalBytes(int&)";
       "OHOS::NetManagerStandard::NetworkShareClient::SetConfigureForShare(bool)";
       "OHOS::NetManagerStandard::NetworkShareClient::IsNearlinkIpShareSupported(std::__h::basic_string<char, std::__h::char_traits<char>, std::__h::allocator<char>> const&, bool&)";
+      "OHOS::NetManagerStandard::NetworkShareClient::QueryNearlinkIpShareCapabilities(std::__h::basic_string<char, std::__h::char_traits<char>, std::__h::allocator<char>> const&, OHOS::NetManagerStandard::NearlinkIpShareCapabilities&)";
       "OHOS::NetManagerStandard::NetworkShareClient::StartNearlinkGatewayWithMode(std::__h::basic_string<char, std::__h::char_traits<char>, std::__h::allocator<char>> const&, int)";
       "OHOS::NetManagerStandard::NetworkShareClient::StartNearlinkTerminalWithMode(std::__h::basic_string<char, std::__h::char_traits<char>, std::__h::allocator<char>> const&, int)";
       "OHOS::NetManagerStandard::NetworkShareClient::StartNearlinkGateway(std::__h::basic_string<char, std::__h::char_traits<char>, std::__h::allocator<char>> const&)";
