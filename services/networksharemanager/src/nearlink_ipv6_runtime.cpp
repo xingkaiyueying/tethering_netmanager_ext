@@ -382,7 +382,6 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
         prefix.clear();
         dns.clear();
     }
-    bool changed = prefix != prefix_ || dns != dns_;
     configured = SelectPrefix(prefix, dns, configured, now);
     if (!daemon_ && (!prefix_.empty() || !retired_.empty())) {
         daemon_ = std::make_shared<RouterAdvertisementDaemon>();
@@ -398,12 +397,18 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
     params.layer3_ = true;
     params.macAddr_ = layer2_;
     params.mtu_ = 1500;
-    params.routerLifetime_ = configured && forwarding && defaultRoute ? 180 : 0;
+    // Match NetworkShare's PAN order: configure the local address and route
+    // before advertising the prefix. The kernel completes DAD asynchronously.
+    bool gatewayReady = configured && ReconcileGatewayAddress();
+    if (!gatewayReady && retired_.empty() && advertisedPrefix_.empty() && !raStarted_) {
+        return false;
+    }
+    params.routerLifetime_ = gatewayReady && forwarding && defaultRoute ? 180 : 0;
     if (!dnsReady) {
         dns.clear();
     }
-    params.rdnssLifetime_ = configured && dnsReady ? 180 : 0;
-    if (configured) {
+    params.rdnssLifetime_ = gatewayReady && dnsReady ? 180 : 0;
+    if (gatewayReady) {
         IpPrefix p;
         Prefix(prefix_, p.prefix);
         p.prefixesLength = 64;
@@ -423,8 +428,16 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
         p.validLifetime = remaining > 0 ? remaining : 0;
         params.prefixes_.push_back(p);
     }
+    if (!gatewayReady) {
+        dns.clear();
+    }
+    std::string announcedPrefix = gatewayReady ? prefix_ : "";
+    bool changed = announcedPrefix != advertisedPrefix_ || dns != dns_;
     PublishAdvertisement(params, dns, changed);
-    return configured && ReconcileGatewayAddress(now);
+    if (raStarted_) {
+        advertisedPrefix_ = announcedPrefix;
+    }
+    return gatewayReady && raStarted_;
 }
 
 void NearlinkIpv6Runtime::PublishAdvertisement(const RaParams &params, const std::string &dns, bool changed)
@@ -481,7 +494,6 @@ bool NearlinkIpv6Runtime::SelectPrefix(std::string &prefix, std::string &dns, bo
         } else {
             prefix_ = prefix;
             gateway_ = dns;
-            advertisedAt_ = now;
         }
     }
     return configured;
@@ -518,10 +530,9 @@ void NearlinkIpv6Runtime::ExpireRetiredPrefixes(std::chrono::steady_clock::time_
     }
 }
 
-bool NearlinkIpv6Runtime::ReconcileGatewayAddress(std::chrono::steady_clock::time_point now)
+bool NearlinkIpv6Runtime::ReconcileGatewayAddress()
 {
-    // Prefix authorization must precede gateway address DAD. Never block the shared worker to wait.
-    if (raStarted_ && !gatewayAddressOwned_ && now - advertisedAt_ >= std::chrono::seconds(5)) {
+    if (!gatewayAddressOwned_) {
         gatewayAddressOwned_ = AddAddress(gateway_);
     }
     if (gatewayAddressOwned_ && !routeOwned_) {
@@ -543,7 +554,7 @@ bool NearlinkIpv6Runtime::ReconcileGatewayAddress(std::chrono::steady_clock::tim
             usable = true;
         }
     }
-    return !prefix_.empty() && raStarted_ && gatewayAddressOwned_ && routeOwned_ && usable;
+    return !prefix_.empty() && gatewayAddressOwned_ && routeOwned_ && usable;
 }
 bool NearlinkIpv6Runtime::Cleanup()
 {

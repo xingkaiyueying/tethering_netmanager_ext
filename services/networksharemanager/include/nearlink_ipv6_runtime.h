@@ -45,12 +45,11 @@ private:
                       std::chrono::steady_clock::time_point now);
     void PublishAdvertisement(const RaParams &params, const std::string &dns, bool changed);
     void ExpireRetiredPrefixes(std::chrono::steady_clock::time_point now);
-    bool ReconcileGatewayAddress(std::chrono::steady_clock::time_point now);
+    bool ReconcileGatewayAddress();
     uint32_t ifindex_{0};
     short flags_{0};
     bool flagsOwned_{false}, tokenOwned_{false}, routeOwned_{false}, raStarted_{false}, prepared_{false},
         gatewayAddressOwned_{false};
-    std::chrono::steady_clock::time_point advertisedAt_{};
     struct Retired {
         std::string prefix, gateway;
         std::chrono::steady_clock::time_point until;
@@ -60,7 +59,7 @@ private:
     int lastRouterLifetime_{-1};
     std::map<std::string, std::string> settings_;
     std::vector<std::string> addresses_;
-    std::string layer2_, prefix_, gateway_, dns_;
+    std::string layer2_, prefix_, gateway_, dns_, advertisedPrefix_;
     std::shared_ptr<RouterAdvertisementDaemon> daemon_;
 };
 } // namespace OHOS::NetManagerStandard

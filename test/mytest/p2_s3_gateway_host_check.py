@@ -84,26 +84,39 @@ bool HasIpv6DefaultRouteOnInterface(const std::string &iface)
 ''' + advertise + r'''
 }
 using namespace OHOS::NetManagerStandard;
+void kernelAddress(const std::string &address, unsigned flags)
+{
+ in6_addr binary{};assert(inet_pton(AF_INET6,address.c_str(),&binary)==1);
+ std::ofstream f("if_inet6.txt");
+ for(unsigned char byte:binary.s6_addr){char hex[3]{};snprintf(hex,sizeof(hex),"%02x",byte);f<<hex;}
+ f<<" 07 40 00 "<<std::hex<<flags<<" sleip0\n";
+}
 int main(){
  NearlinkIpv6Runtime runtime;runtime.ifindex_=7;runtime.layer2_="02:11:22:33:44:55";
  assert(!runtime.Advertise(nullptr,false));
  NetLinkInfo up;up.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:20::1234"});
  Route def;def.destination_.family_=AF_INET6;up.routeList_.push_back(def);
- {std::ofstream f("if_inet6.txt");f<<"20010db800100021001122fffe334455 07 40 00 00 sleip0\n";}
- assert(!runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==1);
+ {std::ofstream f("if_inet6.txt");}
+ assert(!runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==0);
  assert(runtime.prefix_=="2001:db8:10:21::");
  assert(runtime.gateway_=="2001:db8:10:21:11:22ff:fe33:4455");
+ assert(runtime.addresses_.size()==1);
+ kernelAddress(runtime.gateway_,0x40); // Tentative address must not be advertised as DNS or a prefix.
+ assert(!runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==0);
+ kernelAddress(runtime.gateway_,0);
+ assert(runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==1);
  assert(runtime.daemon_->params.dnses_.size()==1);
- runtime.advertisedAt_-=std::chrono::seconds(6);
- assert(runtime.Advertise(&up,true));assert(runtime.daemon_->params.routerLifetime_==180);
+ assert(runtime.daemon_->params.prefixes_.size()==1);
+ assert(runtime.daemon_->params.routerLifetime_==180);
  assert(runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==1);
  up.netAddrList_.clear();up.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:30::abcd"});
  assert(!runtime.Advertise(&up,true));assert(runtime.retired_.size()==1);
- assert(runtime.daemon_->params.prefixes_.size()==2);
- assert(runtime.daemon_->params.prefixes_[1].preferredLifetime==0);
- assert(runtime.addresses_.size()==1); // old address survives while new DAD is pending
- runtime.advertisedAt_-=std::chrono::seconds(6);
- {std::ofstream f("if_inet6.txt");f<<"20010db800100031001122fffe334455 07 40 00 00 sleip0\n";}
+ assert(runtime.daemon_->params.prefixes_.size()==1);
+ assert(runtime.daemon_->params.prefixes_[0].preferredLifetime==0);
+ assert(runtime.addresses_.size()==2); // old address survives while new DAD is pending
+ kernelAddress(runtime.gateway_,0x08); // DAD failure must not publish an active prefix.
+ assert(!runtime.Advertise(&up,true));assert(runtime.daemon_->params.dnses_.empty());
+ kernelAddress(runtime.gateway_,0);
  assert(runtime.Advertise(&up,true));assert(runtime.addresses_.size()==2);
  runtime.retired_[0].until=std::chrono::steady_clock::now()-std::chrono::seconds(1);
  assert(runtime.Advertise(&up,true));assert(runtime.retired_.empty());assert(runtime.addresses_.size()==1);
@@ -119,6 +132,7 @@ int main(){
  assert(!runtime.retired_.empty()); // failed resources are retained for cleanup, never silently dropped
  NetsysController::failRemove=false;runtime.Advertise(&up,true);
  assert(runtime.retired_.empty() && runtime.prefix_=="2001:db8:10:71::");
+ kernelAddress(runtime.gateway_,0);
  runtime.Advertise(&up,true,false);
  assert(runtime.daemon_->params.dnses_.empty() && runtime.daemon_->params.rdnssLifetime_==0);
  runtime.Advertise(&up,true,true);assert(runtime.daemon_->params.dnses_.size()==1);
@@ -140,11 +154,15 @@ int main(){
  NearlinkIpv6Runtime missingRoute;missingRoute.ifindex_=7;missingRoute.layer2_="02:11:22:33:44:55";
  routedInterface="rmnet0";
  missingRoute.Advertise(&cellular,true);
+ kernelAddress(missingRoute.gateway_,0);
+ missingRoute.Advertise(&cellular,true);
  assert(missingRoute.daemon_->params.routerLifetime_==180);
  NetLinkInfo wifi=cellular;wifi.ifaceName_="wlan0";
  missingRoute.Advertise(&wifi,true);
  assert(missingRoute.daemon_->params.routerLifetime_==0); // Another connected interface is not the selected upstream.
  routedInterface="wlan0";
+ missingRoute.Advertise(&wifi,true);
+ kernelAddress(missingRoute.gateway_,0);
  missingRoute.Advertise(&wifi,true);
  assert(missingRoute.daemon_->params.routerLifetime_==180);
  routedInterface.clear();
