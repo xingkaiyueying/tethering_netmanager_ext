@@ -856,19 +856,34 @@ void NearlinkIpShareController::ConfigureGatewayIpv6(const NetLinkInfo *upstream
     }
     bool ready = ipv6Prepared_ &&
                  ipv6Runtime_.Advertise(upstream, interfaceForwarding_ && forwardingEnabled_, dnsUpstreamReady_);
+    bool available = ready && dnsUpstreamReady_;
+    auto now = std::chrono::steady_clock::now();
+    if (available) {
+        ipv6GatewayPendingSince_ = {};
+    } else if (ipv6Prepared_ && dnsUpstreamReady_ &&
+               ipv6GatewayPendingSince_ == std::chrono::steady_clock::time_point{}) {
+        ipv6GatewayPendingSince_ = now;
+    }
+    // RA, gateway address DAD and the route complete asynchronously. Keep the
+    // family CONFIGURING during the initial admission window, then report a
+    // retryable failure if readiness never arrives.
+    bool pending = !available && ipv6Prepared_ && dnsUpstreamReady_ &&
+        now - ipv6GatewayPendingSince_ < std::chrono::seconds(10);
     std::lock_guard lock(mutex_);
     status_.serviceReady = dhcpServerStarted_ || ready;
-    status_.ipv6.phase = ready && dnsUpstreamReady_ ? 2 : 3;
-    status_.ipv6.configurationAvailable = ready && dnsUpstreamReady_;
+    status_.ipv6.phase = available ? 2 : (pending ? 1 : 3);
+    status_.ipv6.configurationAvailable = available;
     status_.ipv6.externalAvailable = false;
     status_.ipv6.validation = 0;
-    status_.ipv6.hasError = !ready || !dnsUpstreamReady_;
+    status_.ipv6.hasError = !available && !pending;
     if (status_.ipv6.hasError) {
         status_.ipv6.error.plane = 4;
         status_.ipv6.error.family = 2;
         status_.ipv6.error.stage = ready ? "DNS" : "PREFIX";
         status_.ipv6.error.retryable = true;
         status_.ipv6.error.code = NETMANAGER_EXT_ERR_OPERATION_FAILED;
+    } else {
+        status_.ipv6.error = {};
     }
 }
 
@@ -1543,6 +1558,7 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
     ipv4PublishPending_ = false;
     networkDirty_ = false;
     ipv6Addresses_ = DhcpL3Ipv6Snapshot{};
+    ipv6GatewayPendingSince_ = {};
     maintenancePending_ = false;
     ++networkRevision_;
     validationInFlight_ = false;

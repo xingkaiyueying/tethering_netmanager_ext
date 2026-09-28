@@ -123,6 +123,7 @@ private:
     bool supplierAvailable_{false};
     NearlinkIpv6Runtime ipv6Runtime_;
     bool ipv6Prepared_{false};
+    std::chrono::steady_clock::time_point ipv6GatewayPendingSince_{};
     void ConfigureGatewayIpv6(const NetLinkInfo *upstream);
     DhcpL3Ipv6Snapshot ipv6Addresses_{};
     std::chrono::steady_clock::time_point ipv6Observed_{};

@@ -159,7 +159,12 @@ int main() {
     errors.clear();errors["dns-set"]=-7;c->ConfigureUpstream();
     assert(c->status_.ipv6.hasError && c->status_.ipv6.error.stage=="DNS");
     assert(!c->status_.ipv6.configurationAvailable);
+    errors.clear();errors["ra"]=-7;c->ConfigureUpstream();
+    assert(c->status_.ipv6.phase==1 && !c->status_.ipv6.hasError && !c->status_.ipv6.configurationAvailable);
+    c->ipv6GatewayPendingSince_-=std::chrono::seconds(11);c->ConfigureUpstream();
+    assert(c->status_.ipv6.phase==3 && c->status_.ipv6.hasError && c->status_.ipv6.error.stage=="PREFIX");
     errors.clear();c->ConfigureUpstream();assert(c->status_.ipv6.configurationAvailable);
+    assert(c->status_.ipv6.phase==2 && !c->status_.ipv6.hasError && c->status_.ipv6.error.code==0);
     c->Cleanup();net.hasDefault=false;
     auto oldSession=session;
     errors["ipv6-prepare"]=-1;
