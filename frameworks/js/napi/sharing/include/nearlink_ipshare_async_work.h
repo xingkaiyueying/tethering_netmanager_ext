@@ -24,6 +24,7 @@ class NearlinkIpShareAsyncWork final {
 public:
     static void ExecIsSupported(napi_env env, void *data);
     static void ExecGetCapabilities(napi_env env, void *data);
+    static void ExecGetSupportedMaxTerminals(napi_env env, void *data);
     static void ExecStartGateway(napi_env env, void *data);
     static void ExecStopGateway(napi_env env, void *data);
     static void ExecStartTerminal(napi_env env, void *data);
@@ -32,13 +33,15 @@ public:
     static void VoidCallback(napi_env env, napi_status status, void *data);
     static void SupportedCallback(napi_env env, napi_status status, void *data);
     static void CapabilitiesCallback(napi_env env, napi_status status, void *data);
+    static void MaxTerminalsCallback(napi_env env, napi_status status, void *data);
     static void StatusCallback(napi_env env, napi_status status, void *data);
 
 private:
-    enum class Operation { SUPPORT, CAPABILITIES, START_GATEWAY, STOP_GATEWAY, START_TERMINAL, STOP_TERMINAL, GET_STATUS };
+    enum class Operation { SUPPORT, CAPABILITIES, CAPACITY, START_GATEWAY, STOP_GATEWAY, START_TERMINAL, STOP_TERMINAL, GET_STATUS };
     static bool Execute(NearlinkIpShareContext *context, Operation operation);
     static bool DoSupport(NearlinkIpShareContext *context);
     static bool DoCapabilities(NearlinkIpShareContext *context);
+    static bool DoCapacity(NearlinkIpShareContext *context);
     static bool DoStartGateway(NearlinkIpShareContext *context);
     static bool DoStopGateway(NearlinkIpShareContext *context);
     static bool DoStartTerminal(NearlinkIpShareContext *context);
@@ -47,6 +50,7 @@ private:
     static napi_value MakeVoid(NearlinkIpShareContext *context);
     static napi_value MakeSupported(NearlinkIpShareContext *context);
     static napi_value MakeCapabilities(NearlinkIpShareContext *context);
+    static napi_value MakeMaxTerminals(NearlinkIpShareContext *context);
     static napi_value MakeStatus(NearlinkIpShareContext *context);
 };
 } // namespace OHOS::NetManagerStandard

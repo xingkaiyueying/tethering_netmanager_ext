@@ -28,6 +28,7 @@ declare namespace sharing {
   export type NearlinkIpShareRole = 'NONE' | 'GATEWAY' | 'TERMINAL';
   export type NearlinkIpShareMode = 'IPV4' | 'DUAL_STACK';
   export interface NearlinkIpShareStartOptions { mode: NearlinkIpShareMode; }
+  export interface NearlinkGatewayOptions { mode: NearlinkIpShareMode; maxTerminals: number; }
   export interface NearlinkIpShareCapabilities {
     identifierPresent: boolean;
     discoveryState: number;
@@ -87,6 +88,8 @@ declare namespace sharing {
   function isNearlinkIpShareSupported(peerAddress: string): Promise<boolean>;
   function getNearlinkIpShareCapabilities(peerAddress: string): Promise<NearlinkIpShareCapabilities>;
   function startNearlinkGateway(peerAddress: string, options?: NearlinkIpShareStartOptions): Promise<void>;
+  function startNearlinkGateway(options: NearlinkGatewayOptions): Promise<void>;
+  function getNearlinkIpShareSupportedMaxTerminals(): Promise<number>;
   function stopNearlinkGateway(): Promise<void>;
   function startNearlinkTerminal(gatewayAddress: string, options?: NearlinkIpShareStartOptions): Promise<void>;
   function stopNearlinkTerminal(): Promise<void>;

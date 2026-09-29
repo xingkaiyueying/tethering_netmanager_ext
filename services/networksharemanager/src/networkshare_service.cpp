@@ -323,6 +323,20 @@ int32_t NetworkShareService::QueryNearlinkIpShareCapabilities(const std::string 
     return NearlinkIpShareController::GetInstance()->QueryCapabilities(peerAddress, capabilities);
 }
 
+int32_t NetworkShareService::StartNearlinkGatewayAny(int32_t mode, int32_t maxTerminals)
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS) return permission;
+    return NearlinkIpShareController::GetInstance()->StartGatewayAny(mode, maxTerminals);
+}
+
+int32_t NetworkShareService::GetNearlinkIpShareSupportedMaxTerminals(int32_t &supportedMaxTerminals)
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS) return permission;
+    return NearlinkIpShareController::GetInstance()->GetSupportedMaxTerminals(supportedMaxTerminals);
+}
+
 int32_t NetworkShareService::StartNearlinkGatewayWithMode(const std::string &peerAddress, int32_t mode)
 {
     int32_t permission = CheckNearlinkIpSharePermission();

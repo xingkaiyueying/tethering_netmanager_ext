@@ -42,4 +42,6 @@ interface OHOS.NetManagerStandard.INetworkShareService {
     void QueryNearlinkIpShareCapabilities([in] String peerAddress, [out] NearlinkIpShareCapabilities capabilities);
     void StartNearlinkGatewayWithMode([in] String peerAddress, [in] int mode);
     void StartNearlinkTerminalWithMode([in] String peerAddress, [in] int mode);
+    void StartNearlinkGatewayAny([in] int mode, [in] int maxTerminals);
+    void GetNearlinkIpShareSupportedMaxTerminals([out] int supportedMaxTerminals);
 }

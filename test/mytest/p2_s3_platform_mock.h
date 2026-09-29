@@ -168,6 +168,8 @@ public:
     int GetStatus(NearlinkIpShareStatus &s) { s=snapshot; return call("snapshot"); }
     int QueryNearlinkIpShareCapabilities(const std::string &, NearlinkIpShareCapabilities &) { return 0; }
     int StartNearlinkGatewayWithMode(const std::string &peer, int) { return StartGateway(peer); }
+    int StartGatewayAny(int, int) { return call("nearlink-start"); }
+    int GetSupportedMaxTerminals() { return 2; }
     int StartNearlinkTerminalWithMode(const std::string &peer, int) { return StartTerminal(peer); }
     int observerRegistrations=0;
     bool serverHasObserver=false;

@@ -177,7 +177,20 @@ int main() {
     errors.clear();errors["ipv6-cleanup"]=-1;c->StopTerminal();q.Drain();
     assert(c->status_.state==NearlinkIpShareState::ERROR && c->status_.errorStage=="CLEANUP");
     errors.clear();c->StopTerminal();q.Drain();assert(c->status_.state==NearlinkIpShareState::IDLE);
-    puts("actual_controller: dual merge, single supplier, independent failure/recovery, DNS withdrawal, evidence, stop fence PASS");
+    int32_t supported=0;assert(c->GetSupportedMaxTerminals(supported)==0 && supported==2);
+    assert(c->StartGatewayAny(1,3)!=0);
+    assert(c->StartGatewayAny(1,1)==0);q.Drain();
+    link=OHOS::Nearlink::NearlinkIpShareStatus{};
+    link.role=NearlinkIpShareRole::GATEWAY;link.state=NearlinkIpShareState::SERVING_NO_UPSTREAM;
+    link.generation=4;link.sequence=1;link.serviceReady=true;
+    OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
+    c->OnNearlinkStatus(link);q.Drain();
+    assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM);
+    assert(!c->dhcpServerStarted_ && !c->localInterfaceAdded_);
+    assert(c->StartGatewayAny(1,1)==0 && c->StartGatewayAny(1,2)!=0);
+    assert(c->StopGateway()==0);q.Drain();
+    assert(c->status_.state==NearlinkIpShareState::IDLE);
+    puts("actual_controller: no-peer gateway capacity and zero-peer projection, dual merge, single supplier, independent failure/recovery, DNS withdrawal, evidence, stop fence PASS");
 }
 ''')
     includes = [out, source / 'include', repo / 'interfaces/innerkits/netshareclient/include',

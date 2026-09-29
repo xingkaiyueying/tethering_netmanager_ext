@@ -428,6 +428,24 @@ int32_t NearlinkIpShareController::QueryCapabilities(const std::string &peer, Ne
     return ret;
 }
 
+int32_t NearlinkIpShareController::GetSupportedMaxTerminals(int32_t &supportedMaxTerminals)
+{
+    if (!Init()) return NETMANAGER_EXT_ERR_OPERATION_FAILED;
+    int32_t value = OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetSupportedMaxTerminals();
+    if (value < 1 || value > 32) return NETMANAGER_EXT_ERR_OPERATION_FAILED;
+    supportedMaxTerminals = value;
+    return NETMANAGER_EXT_SUCCESS;
+}
+
+int32_t NearlinkIpShareController::StartGatewayAny(int32_t mode, int32_t maxTerminals)
+{
+    int32_t supported = 0;
+    int32_t ret = GetSupportedMaxTerminals(supported);
+    if (ret != NETMANAGER_EXT_SUCCESS) return ret;
+    if (maxTerminals < 1 || maxTerminals > supported) return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
+    return Start(NearlinkIpShareRole::GATEWAY, "", mode, maxTerminals);
+}
+
 int32_t NearlinkIpShareController::StartGateway(const std::string &peerAddress, int32_t mode)
 {
     return Start(NearlinkIpShareRole::GATEWAY, peerAddress, mode);
@@ -438,10 +456,11 @@ int32_t NearlinkIpShareController::StartTerminal(const std::string &gatewayAddre
     return Start(NearlinkIpShareRole::TERMINAL, gatewayAddress, mode);
 }
 
-int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::string &peerAddress, int32_t mode)
+int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::string &peerAddress, int32_t mode, int32_t maxTerminals)
 {
     std::array<uint8_t, 6> bytes{};
-    if ((mode != 1 && mode != 3) || !ParsePeerAddress(peerAddress, bytes)) {
+    if ((mode != 1 && mode != 3) || (maxTerminals == 0 && !ParsePeerAddress(peerAddress, bytes)) ||
+        (maxTerminals != 0 && (role != NearlinkIpShareRole::GATEWAY || !peerAddress.empty()))) {
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Start] role=%{public}d invalid peer address", static_cast<int32_t>(role));
         return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
     }
@@ -458,6 +477,7 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
         }
         if (status_.role != NearlinkIpShareRole::NONE) {
             if (status_.role == role && status_.peerAddress == peerAddress && status_.requestedMode == mode &&
+                maxTerminals_ == maxTerminals &&
                 !stopRequested_ && status_.state != NearlinkIpShareState::ERROR) {
                 auto snapshot = status_;
                 NetworkShareTracker::GetInstance().SubmitNearlinkTask(
@@ -475,6 +495,8 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
             gatewayReserved_ = true;
         }
         ++generation_;
+        multiGateway_ = maxTerminals != 0;
+        maxTerminals_ = maxTerminals;
         status_.requestedMode = mode;
         linkGeneration_ = linkSequence_ = evidenceSequence_ = 0;
         dualStack_ = false;
@@ -495,9 +517,11 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
         status_.errorCode = 0;
     }
     auto self = shared_from_this();
-    if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, role, peerAddress, mode]() {
+    if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, role, peerAddress, mode, maxTerminals]() {
             self->Publish(NearlinkIpShareState::STARTING);
-            int32_t ret = role == NearlinkIpShareRole::GATEWAY
+            int32_t ret = maxTerminals != 0
+                              ? OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartGatewayAny(mode, maxTerminals)
+                              : role == NearlinkIpShareRole::GATEWAY
                               ? OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartNearlinkGatewayWithMode(
                                     peerAddress, mode)
                               : OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartNearlinkTerminalWithMode(
@@ -515,6 +539,8 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
             gatewayReserved_ = false;
         }
         status_ = NearlinkIpShareStatus{};
+        multiGateway_ = false;
+        maxTerminals_ = 0;
         return NETMANAGER_EXT_ERR_OPERATION_FAILED;
     }
     return NETMANAGER_EXT_SUCCESS;
@@ -610,11 +636,12 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
         }
         std::array<uint8_t, 6> expected{}, actual{};
         if (static_cast<int32_t>(status.role) != static_cast<int32_t>(role) ||
+            (multiGateway_ ? !status.peerAddress.empty() || !status_.peerAddress.empty() :
             !ParsePeerAddress(status.peerAddress, actual) || !ParsePeerAddress(status_.peerAddress, expected) ||
-            actual != expected) {
+            actual != expected)) {
             return;
         }
-        if (!status.ifaceName.empty() && status.ifaceName != IFACE_NAME) {
+        if (!multiGateway_ && !status.ifaceName.empty() && status.ifaceName != IFACE_NAME) {
             return;
         }
         if (status.generation < linkGeneration_ ||
@@ -623,6 +650,7 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
         }
         // A different live generation needs an explicit stop/restart; never graft old L3 resources onto it.
         if (linkGeneration_ != 0 && status.generation != linkGeneration_) {
+            if (multiGateway_) return;
             if (role != NearlinkIpShareRole::GATEWAY || interfaceIndex_ != if_nametoindex(IFACE_NAME)) {
                 return;
             }
@@ -656,6 +684,11 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
                      MaskPeer(status.peerAddress).c_str(), status.ifaceName.c_str());
     if (status.state == OHOS::Nearlink::NearlinkIpShareState::ERROR) {
         Fail(status.errorStage.empty() ? "LINK" : status.errorStage, status.errorCode);
+        return;
+    }
+    if (multiGateway_ && role == NearlinkIpShareRole::GATEWAY) {
+        Publish(status.serviceReady ? NearlinkIpShareState::SERVING_NO_UPSTREAM :
+            NearlinkIpShareState::STARTING);
         return;
     }
     if (role == NearlinkIpShareRole::GATEWAY && (status.state == OHOS::Nearlink::NearlinkIpShareState::IFACE_READY ||
@@ -1614,6 +1647,7 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
             gatewayReserved_ = false;
         }
         stopRequested_ = false;
+        if (error == 0) { multiGateway_ = false; maxTerminals_ = 0; }
         if (error == 0 && publishIdle) {
             idle.generation = status_.generation;
             idle.sequence = status_.sequence + 1;

@@ -286,6 +286,19 @@ int32_t NetworkShareClient::QueryNearlinkIpShareCapabilities(const std::string &
     return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->QueryNearlinkIpShareCapabilities(peerAddress, capabilities);
 }
 
+int32_t NetworkShareClient::StartNearlinkGatewayAny(int32_t mode, int32_t maxTerminals)
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->StartNearlinkGatewayAny(mode, maxTerminals);
+}
+
+int32_t NetworkShareClient::GetNearlinkIpShareSupportedMaxTerminals(int32_t &supportedMaxTerminals)
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL :
+        proxy->GetNearlinkIpShareSupportedMaxTerminals(supportedMaxTerminals);
+}
+
 int32_t NetworkShareClient::StartNearlinkGatewayWithMode(const std::string &peerAddress, int32_t mode)
 {
     auto proxy = GetProxy();

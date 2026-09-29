@@ -26,7 +26,7 @@ bool NearlinkIpShareAsyncWork::Execute(NearlinkIpShareContext *context, Operatio
 {
     if (((operation == Operation::SUPPORT || operation == Operation::CAPABILITIES) &&
         (context->HasMode() || context->GetPeerAddress().empty())) ||
-        ((operation == Operation::STOP_GATEWAY || operation == Operation::STOP_TERMINAL ||
+        ((operation == Operation::CAPACITY || operation == Operation::STOP_GATEWAY || operation == Operation::STOP_TERMINAL ||
             operation == Operation::GET_STATUS) && !context->GetPeerAddress().empty())) {
         context->SetErrorCode(NETMANAGER_EXT_ERR_PARAMETER_ERROR);
         return false;
@@ -42,6 +42,12 @@ bool NearlinkIpShareAsyncWork::Execute(NearlinkIpShareContext *context, Operatio
             }
             break;
         }
+        case Operation::CAPACITY: {
+            int32_t supported = 0;
+            ret = client->GetNearlinkIpShareSupportedMaxTerminals(supported);
+            context->SetSupportedMaxTerminals(supported);
+            break;
+        }
         case Operation::CAPABILITIES: {
             NearlinkIpShareCapabilities capabilities;
             ret = client->QueryNearlinkIpShareCapabilities(context->GetPeerAddress(), capabilities);
@@ -49,7 +55,9 @@ bool NearlinkIpShareAsyncWork::Execute(NearlinkIpShareContext *context, Operatio
             break;
         }
         case Operation::START_GATEWAY:
-            if (!context->GetPeerAddress().empty()) {
+            if (context->HasMaxTerminals()) {
+                ret = client->StartNearlinkGatewayAny(context->GetMode(), context->GetMaxTerminals());
+            } else if (!context->GetPeerAddress().empty()) {
                 ret = context->HasMode() ? client->StartNearlinkGatewayWithMode(context->GetPeerAddress(),
                     context->GetMode()) : client->StartNearlinkGateway(context->GetPeerAddress());
             }
@@ -87,6 +95,7 @@ bool NearlinkIpShareAsyncWork::Execute(NearlinkIpShareContext *context, Operatio
     }
 DEFINE_DO(DoSupport, SUPPORT)
 DEFINE_DO(DoCapabilities, CAPABILITIES)
+DEFINE_DO(DoCapacity, CAPACITY)
 DEFINE_DO(DoStartGateway, START_GATEWAY)
 DEFINE_DO(DoStopGateway, STOP_GATEWAY)
 DEFINE_DO(DoStartTerminal, START_TERMINAL)
@@ -102,6 +111,7 @@ DEFINE_DO(DoGetStatus, GET_STATUS)
 
 DEFINE_EXEC(ExecIsSupported, DoSupport)
 DEFINE_EXEC(ExecGetCapabilities, DoCapabilities)
+DEFINE_EXEC(ExecGetSupportedMaxTerminals, DoCapacity)
 DEFINE_EXEC(ExecStartGateway, DoStartGateway)
 DEFINE_EXEC(ExecStopGateway, DoStopGateway)
 DEFINE_EXEC(ExecStartTerminal, DoStartTerminal)
@@ -124,6 +134,11 @@ napi_value NearlinkIpShareAsyncWork::MakeCapabilities(NearlinkIpShareContext *co
     return NearlinkIpShareConverter::CapabilitiesToJs(context->GetEnv(), context->GetCapabilities());
 }
 
+napi_value NearlinkIpShareAsyncWork::MakeMaxTerminals(NearlinkIpShareContext *context)
+{
+    return NapiUtils::CreateInt32(context->GetEnv(), context->GetSupportedMaxTerminals());
+}
+
 napi_value NearlinkIpShareAsyncWork::MakeStatus(NearlinkIpShareContext *context)
 {
     return NearlinkIpShareConverter::ToJs(context->GetEnv(), context->GetStatus());
@@ -142,6 +157,11 @@ void NearlinkIpShareAsyncWork::SupportedCallback(napi_env env, napi_status statu
 void NearlinkIpShareAsyncWork::CapabilitiesCallback(napi_env env, napi_status status, void *data)
 {
     BaseAsyncWork::AsyncWorkCallback<NearlinkIpShareContext, NearlinkIpShareAsyncWork::MakeCapabilities>(env, status, data);
+}
+
+void NearlinkIpShareAsyncWork::MaxTerminalsCallback(napi_env env, napi_status status, void *data)
+{
+    BaseAsyncWork::AsyncWorkCallback<NearlinkIpShareContext, NearlinkIpShareAsyncWork::MakeMaxTerminals>(env, status, data);
 }
 
 void NearlinkIpShareAsyncWork::StatusCallback(napi_env env, napi_status status, void *data)

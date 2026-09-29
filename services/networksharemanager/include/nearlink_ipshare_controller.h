@@ -47,6 +47,8 @@ public:
     void Uninit();
     int32_t IsSupported(const std::string &peerAddress, bool &supported);
     int32_t StartGateway(const std::string &peerAddress, int32_t mode = 1);
+    int32_t StartGatewayAny(int32_t mode, int32_t maxTerminals);
+    int32_t GetSupportedMaxTerminals(int32_t &supportedMaxTerminals);
     int32_t StopGateway();
     int32_t StartTerminal(const std::string &gatewayAddress, int32_t mode = 1);
     int32_t StopTerminal();
@@ -61,7 +63,7 @@ public:
 
 private:
     NearlinkIpShareController() = default;
-    int32_t Start(NearlinkIpShareRole role, const std::string &peerAddress, int32_t mode);
+    int32_t Start(NearlinkIpShareRole role, const std::string &peerAddress, int32_t mode, int32_t maxTerminals = 0);
     int32_t Stop(NearlinkIpShareRole expectedRole);
     void HandleNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
     void ConfigureGateway();
@@ -97,6 +99,8 @@ private:
     bool stopRequested_{false};
     std::atomic<uint64_t> generation_{0};
     bool gatewayReserved_{false};
+    bool multiGateway_{false};
+    int32_t maxTerminals_{0};
     bool nearlinkStarted_{false};
     bool localInterfaceAdded_{false};
     bool localRouteAdded_{false};

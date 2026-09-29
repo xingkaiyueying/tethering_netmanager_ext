@@ -15,6 +15,7 @@
 #include "nearlink_ipshare_context.h"
 
 #include <cctype>
+#include <cmath>
 
 #include "constant.h"
 #include "napi_utils.h"
@@ -29,6 +30,32 @@ NearlinkIpShareContext::NearlinkIpShareContext(napi_env env, std::shared_ptr<Eve
 void NearlinkIpShareContext::ParseParams(napi_value *params, size_t paramsCount)
 {
     if (paramsCount == PARAM_NONE) {
+        SetParseOK(true);
+        return;
+    }
+    if (paramsCount == PARAM_JUST_OPTIONS && NapiUtils::GetValueType(GetEnv(), params[0]) == napi_object) {
+        napi_value modeValue = nullptr, maxValue = nullptr;
+        if (napi_get_named_property(GetEnv(), params[0], "mode", &modeValue) != napi_ok ||
+            NapiUtils::GetValueType(GetEnv(), modeValue) != napi_string ||
+            napi_get_named_property(GetEnv(), params[0], "maxTerminals", &maxValue) != napi_ok ||
+            NapiUtils::GetValueType(GetEnv(), maxValue) != napi_number) {
+            SetErrorCode(NETMANAGER_EXT_ERR_PARAMETER_ERROR);
+            SetNeedThrowException(true);
+            return;
+        }
+        auto mode = NapiUtils::GetStringFromValueUtf8(GetEnv(), modeValue);
+        double capacity = 0;
+        if ((mode != "IPV4" && mode != "DUAL_STACK") ||
+            napi_get_value_double(GetEnv(), maxValue, &capacity) != napi_ok ||
+            !std::isfinite(capacity) || std::floor(capacity) != capacity || capacity < 1 || capacity > 32) {
+            SetErrorCode(NETMANAGER_EXT_ERR_PARAMETER_ERROR);
+            SetNeedThrowException(true);
+            return;
+        }
+        mode_ = mode == "IPV4" ? 1 : 3;
+        hasMode_ = true;
+        hasMaxTerminals_ = true;
+        maxTerminals_ = static_cast<int32_t>(capacity);
         SetParseOK(true);
         return;
     }
@@ -79,6 +106,10 @@ void NearlinkIpShareContext::ParseParams(napi_value *params, size_t paramsCount)
 
 int32_t NearlinkIpShareContext::GetMode() const { return mode_; }
 bool NearlinkIpShareContext::HasMode() const { return hasMode_; }
+bool NearlinkIpShareContext::HasMaxTerminals() const { return hasMaxTerminals_; }
+int32_t NearlinkIpShareContext::GetMaxTerminals() const { return maxTerminals_; }
+void NearlinkIpShareContext::SetSupportedMaxTerminals(int32_t value) { supportedMaxTerminals_ = value; }
+int32_t NearlinkIpShareContext::GetSupportedMaxTerminals() const { return supportedMaxTerminals_; }
 void NearlinkIpShareContext::SetCapabilities(const NearlinkIpShareCapabilities &value) { capabilities_ = value; }
 const NearlinkIpShareCapabilities &NearlinkIpShareContext::GetCapabilities() const { return capabilities_; }
 

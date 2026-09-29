@@ -32,13 +32,14 @@ class Parcelable {public: virtual ~Parcelable()=default; virtual bool Marshallin
 #include <string>
 #include <vector>
 struct Value {
- std::string text; int64_t number=0; bool flag=false;
+ std::string text; double number=0; bool flag=false;
  std::map<std::string,Value*> fields; std::vector<Value*> items;
  int type=3;
 };
 using napi_env=void*; using napi_value=Value*;
 enum napi_status {napi_ok};
-enum napi_valuetype {napi_undefined=0,napi_null=1,napi_string=2,napi_object=3};
+enum napi_valuetype {napi_undefined=0,napi_null=1,napi_string=2,napi_object=3,napi_number=4};
+inline napi_status napi_get_value_double(napi_env,napi_value value,double* result) { *result=value->number; return napi_ok; }
 inline napi_status napi_set_named_property(napi_env,napi_value object,const char* key,napi_value value) {
  object->fields[key]=value; return napi_ok;
 }
@@ -75,7 +76,7 @@ inline napi_valuetype GetValueType(napi_env,napi_value v) {return static_cast<na
 inline std::string GetStringFromValueUtf8(napi_env,napi_value v) {return v->text;}
 inline napi_value CreateObject(napi_env) {return new Value;}
 inline napi_value CreateArray(napi_env,size_t count) {auto v=new Value;v->items.resize(count);return v;}
-inline napi_value CreateUint32(napi_env,uint32_t n) {auto v=new Value;v->number=n;return v;}
+inline napi_value CreateUint32(napi_env,uint32_t n) {auto v=new Value;v->number=n;v->type=napi_number;return v;}
 inline napi_value CreateStringUtf8(napi_env,const std::string &s) {auto v=new Value;v->text=s;v->type=napi_string;return v;}
 inline void SetArrayElement(napi_env,napi_value v,uint32_t index,napi_value item) {v->items.at(index)=item;}
 inline void SetStringPropertyUtf8(napi_env,napi_value v,const std::string &key,const std::string &s) {
@@ -112,6 +113,18 @@ int main() {
  arguments[0]=NapiUtils::CreateStringUtf8(nullptr,"not-an-address");
  NearlinkIpShareContext badPeer(nullptr,manager);badPeer.ParseParams(arguments,1);
  assert(!badPeer.parsed&&badPeer.throws);
+ auto gateway=NapiUtils::CreateObject(nullptr);
+ gateway->fields["mode"]=NapiUtils::CreateStringUtf8(nullptr,"IPV4");
+ gateway->fields["maxTerminals"]=NapiUtils::CreateUint32(nullptr,2);
+ arguments[0]=gateway;
+ NearlinkIpShareContext multi(nullptr,manager);multi.ParseParams(arguments,1);
+ assert(multi.parsed&&multi.HasMaxTerminals()&&multi.GetMaxTerminals()==2&&multi.GetPeerAddress().empty());
+ gateway->fields["maxTerminals"]->number=1.5;
+ NearlinkIpShareContext fraction(nullptr,manager);fraction.ParseParams(arguments,1);
+ assert(!fraction.parsed&&fraction.throws);
+ gateway->fields["maxTerminals"]->number=0;
+ NearlinkIpShareContext zero(nullptr,manager);zero.ParseParams(arguments,1);
+ assert(!zero.parsed&&zero.throws);
  NearlinkIpShareCapabilities caps;
  caps.identifierPresent=true;caps.peerCapabilityKnown=false;caps.localModes={1,3};caps.peerModes.clear();
  auto c=NearlinkIpShareConverter::CapabilitiesToJs(nullptr,caps);
