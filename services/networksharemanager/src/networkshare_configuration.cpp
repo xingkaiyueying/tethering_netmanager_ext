@@ -315,6 +315,8 @@ int32_t NetworkShareConfiguration::LoadConfigData()
         if (std::string::npos != pos) {
             std::string strKey = line.substr(0, pos);
             std::string strValue = line.substr(pos + 1, line.size());
+            // IPv6 runtime owns its live keys; do not insert unknown keys as enum defaults.
+            if (configMap_.find(strKey) == configMap_.end()) return;
             NETMGR_EXT_LOG_I("strKey:%{public}s, strValue:%{private}s.", strKey.c_str(), strValue.c_str());
             this->ParseLineData(strKey, strValue);
         }

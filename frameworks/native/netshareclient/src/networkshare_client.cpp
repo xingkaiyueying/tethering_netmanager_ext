@@ -280,6 +280,24 @@ int32_t NetworkShareClient::IsNearlinkIpShareSupported(const std::string &peerAd
         proxy->IsNearlinkIpShareSupported(peerAddress, supported);
 }
 
+int32_t NetworkShareClient::QueryNearlinkIpShareCapabilities(const std::string &peerAddress, NearlinkIpShareCapabilities &capabilities)
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->QueryNearlinkIpShareCapabilities(peerAddress, capabilities);
+}
+
+int32_t NetworkShareClient::StartNearlinkGatewayWithMode(const std::string &peerAddress, int32_t mode)
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->StartNearlinkGatewayWithMode(peerAddress, mode);
+}
+
+int32_t NetworkShareClient::StartNearlinkTerminalWithMode(const std::string &peerAddress, int32_t mode)
+{
+    auto proxy = GetProxy();
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->StartNearlinkTerminalWithMode(peerAddress, mode);
+}
+
 int32_t NetworkShareClient::StartNearlinkGateway(const std::string &peerAddress)
 {
     auto proxy = GetProxy();
@@ -307,7 +325,37 @@ int32_t NetworkShareClient::StopNearlinkTerminal()
 int32_t NetworkShareClient::GetNearlinkIpShareStatus(NearlinkIpShareStatus &status)
 {
     auto proxy = GetProxy();
-    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->GetNearlinkIpShareStatus(status);
+    if (proxy == nullptr) {
+        return NETMANAGER_EXT_ERR_GET_PROXY_FAIL;
+    }
+    // The generated proxy uses Parcelable's virtual entry points. Keep the
+    // parcel object in this CFI-enabled library instead of dispatching through
+    // a vtable emitted by an executable or another shared library.
+    NearlinkIpShareStatus reply;
+    int32_t ret = proxy->GetNearlinkIpShareStatus(reply);
+    if (ret == NETMANAGER_SUCCESS) {
+        // The caller may have constructed status in a different CFI DSO.
+        // Copy data only; Parcelable's generated assignment checks its vtable.
+        status.role = reply.role;
+        status.state = reply.state;
+        status.peerAddress = reply.peerAddress;
+        status.ifaceName = reply.ifaceName;
+        status.ipv4Address = reply.ipv4Address;
+        status.hasUpstream = reply.hasUpstream;
+        status.errorStage = reply.errorStage;
+        status.errorCode = reply.errorCode;
+        status.contextId = reply.contextId;
+        status.fallbackReason = reply.fallbackReason;
+        status.generation = reply.generation;
+        status.sequence = reply.sequence;
+        status.requestedMode = reply.requestedMode;
+        status.selectedMode = reply.selectedMode;
+        status.netId = reply.netId;
+        status.serviceReady = reply.serviceReady;
+        status.ipv4 = reply.ipv4;
+        status.ipv6 = reply.ipv6;
+    }
+    return ret;
 }
 
 int32_t NetworkShareClient::RegisterNearlinkIpShareEvent(sptr<INearlinkIpShareEventCallback> callback)

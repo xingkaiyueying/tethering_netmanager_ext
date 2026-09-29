@@ -28,6 +28,9 @@ void RaParams::Set(const RaParams &raParam)
     prefixes_ = raParam.prefixes_;
     dnses_ = raParam.dnses_;
     macAddr_ = raParam.macAddr_;
+    layer3_ = raParam.layer3_;
+    routerLifetime_ = raParam.routerLifetime_;
+    rdnssLifetime_ = raParam.rdnssLifetime_;
 }
 
 bool RaParams::ContainsPrefix(const IpPrefix &prefix)

@@ -23,6 +23,7 @@ namespace OHOS::NetManagerStandard {
 class NearlinkIpShareConverter final {
 public:
     static napi_value ToJs(napi_env env, const NearlinkIpShareStatus &status);
+    static napi_value CapabilitiesToJs(napi_env env, const NearlinkIpShareCapabilities &capabilities);
 };
 } // namespace OHOS::NetManagerStandard
 #endif // NETMANAGER_EXT_NEARLINK_IPSHARE_CONVERTER_H

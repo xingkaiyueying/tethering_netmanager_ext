@@ -676,13 +676,13 @@ int32_t NetworkShareTracker::RegisterSharingEvent(sptr<ISharingEventCallback> ca
     return NETMANAGER_EXT_SUCCESS;
 }
 
-bool NetworkShareTracker::SubmitNearlinkTask(const std::function<void()> &task)
+bool NetworkShareTracker::SubmitNearlinkTask(const std::function<void()> &task, uint64_t delayUs)
 {
     if (networkShareTrackerFfrtQueue_ == nullptr || !task) {
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Worker] queue unavailable");
         return false;
     }
-    networkShareTrackerFfrtQueue_->submit(task, ffrt::task_attr().name("NearlinkIpShare_task"));
+    networkShareTrackerFfrtQueue_->submit(task, ffrt::task_attr().name("NearlinkIpShare_task").delay(delayUs));
     return true;
 }
 
@@ -803,25 +803,26 @@ int32_t NetworkShareTracker::GetSharedSubSMTraffic(const TrafficType &type, int3
 int32_t NetworkShareTracker::EnableNetSharingInternal(const SharingIfaceType &type, bool enable)
 {
     const std::string owner = "request:" + std::to_string(static_cast<int32_t>(type));
-    if (enable && !NetworkShareAdmission::GetInstance().AcquireLegacy(owner)) {
+    if (enable && !NetworkShareAdmission::GetInstance().HasLegacy(owner) &&
+        !NetworkShareAdmission::GetInstance().AcquireLegacy(owner)) {
+        clientRequestsBitMask_.fetch_and(~(1U << static_cast<uint32_t>(type)), std::memory_order_relaxed);
         return NETMANAGER_EXT_ERR_OPERATION_FAILED;
     }
     NETMGR_EXT_LOG_I("NetSharing type[%{public}d] enable[%{public}d].", type, enable);
-    int32_t result = NETMANAGER_EXT_SUCCESS;
-    switch (type) {
-        case SharingIfaceType::SHARING_WIFI:
-            result = SetWifiNetworkSharing(enable);
-            break;
-        case SharingIfaceType::SHARING_USB:
-            result = SetUsbNetworkSharing(enable);
-            break;
-        case SharingIfaceType::SHARING_BLUETOOTH:
-            result = SetBluetoothNetworkSharing(enable);
-            break;
-        default:
-            NETMGR_EXT_LOG_E("Invalid networkshare type.");
-            return NETWORKSHARE_ERROR_UNKNOWN_TYPE;
-    }
+    auto setSharing = [this, type](bool requested) {
+        switch (type) {
+            case SharingIfaceType::SHARING_WIFI:
+                return SetWifiNetworkSharing(requested);
+            case SharingIfaceType::SHARING_USB:
+                return SetUsbNetworkSharing(requested);
+            case SharingIfaceType::SHARING_BLUETOOTH:
+                return SetBluetoothNetworkSharing(requested);
+            default:
+                NETMGR_EXT_LOG_E("Invalid networkshare type.");
+                return static_cast<int32_t>(NETWORKSHARE_ERROR_UNKNOWN_TYPE);
+        }
+    };
+    int32_t result = setSharing(enable);
     if ((enable && result != NETMANAGER_EXT_SUCCESS) ||
         (!enable && result == NETMANAGER_EXT_SUCCESS &&
         (clientRequestsBitMask_.load(std::memory_order_relaxed) & (1U << static_cast<uint32_t>(type))) == 0)) {
@@ -832,6 +833,15 @@ int32_t NetworkShareTracker::EnableNetSharingInternal(const SharingIfaceType &ty
         clientRequestsBitMask_.fetch_and(~(1U << static_cast<uint32_t>(type)), std::memory_order_relaxed);
     } else {
         result = NetsysController::GetInstance().UpdateNetworkSharingType(static_cast<uint32_t>(type), enable);
+        if (enable && result != NETMANAGER_EXT_SUCCESS) {
+            int32_t stopResult = setSharing(false);
+            if (stopResult == NETMANAGER_EXT_SUCCESS) {
+                clientRequestsBitMask_.fetch_and(~(1U << static_cast<uint32_t>(type)), std::memory_order_relaxed);
+                NetworkShareAdmission::GetInstance().ReleaseLegacy(owner);
+            } else {
+                NETMGR_EXT_LOG_E("rollback sharing type[%{public}d] failed[%{public}d]", type, stopResult);
+            }
+        }
     }
 
     return result;

@@ -17,6 +17,7 @@
 #define ROUTER_ADVERTISEMENT_PARAMS_H
 
 #include <any>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <map>
@@ -35,6 +36,8 @@ struct IpPrefix {
     in6_addr address = {};
     in6_addr prefix = {};
     uint32_t prefixesLength = 0;
+    uint32_t validLifetime = 3600;
+    uint32_t preferredLifetime = 3600;
 };
 
 class RaParams {
@@ -47,6 +50,10 @@ public:
     std::string macAddr_;
     std::vector<IpPrefix> prefixes_;
     std::vector<in6_addr> dnses_;
+    // Explicit TUN parameters; legacy tethering retains its existing defaults.
+    bool layer3_ = false;
+    uint16_t routerLifetime_ = 3600;
+    uint32_t rdnssLifetime_ = 3600;
 
 public:
     RaParams();

@@ -227,7 +227,7 @@ public:
 
     void OnPowerConnected();
 
-    bool SubmitNearlinkTask(const std::function<void()> &task);
+    bool SubmitNearlinkTask(const std::function<void()> &task, uint64_t delayUs = 0);
     void SendNearlinkStateChange(const NearlinkIpShareStatus &status);
 
     /**

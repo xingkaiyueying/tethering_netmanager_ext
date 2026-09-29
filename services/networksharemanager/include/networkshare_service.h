@@ -139,6 +139,9 @@ public:
     int32_t SetConfigureForShare(bool enabled) override;
 
     int32_t IsNearlinkIpShareSupported(const std::string &peerAddress, bool &supported) override;
+    int32_t QueryNearlinkIpShareCapabilities(const std::string &peerAddress, NearlinkIpShareCapabilities &capabilities) override;
+    int32_t StartNearlinkGatewayWithMode(const std::string &peerAddress, int32_t mode) override;
+    int32_t StartNearlinkTerminalWithMode(const std::string &peerAddress, int32_t mode) override;
     int32_t StartNearlinkGateway(const std::string &peerAddress) override;
     int32_t StopNearlinkGateway() override;
     int32_t StartNearlinkTerminal(const std::string &gatewayAddress) override;

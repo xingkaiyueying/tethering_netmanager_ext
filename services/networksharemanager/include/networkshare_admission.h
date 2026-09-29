@@ -73,19 +73,20 @@ public:
     }
 
     // Serialize a global-resource syscall with admission. Late legacy callbacks must
-    // not clear a new NearLink session. A failed syscall retains its cleanup reservation.
+    // not clear a new NearLink session. Only successful acquisitions own a resource.
     int32_t LegacyResource(const std::string &resource, bool acquire, const std::function<int32_t()> &operation)
     {
         std::lock_guard lock(mutex_);
         if (nearlink_) {
             return acquire ? NETMANAGER_EXT_ERR_OPERATION_FAILED : NETMANAGER_EXT_SUCCESS;
         }
-        if (acquire) {
-            legacyOwners_.insert(resource);
-        }
         int32_t result = operation();
-        if (!acquire && result == NETMANAGER_EXT_SUCCESS) {
-            legacyOwners_.erase(resource);
+        if (result == NETMANAGER_EXT_SUCCESS) {
+            if (acquire) {
+                legacyOwners_.insert(resource);
+            } else {
+                legacyOwners_.erase(resource);
+            }
         }
         return result;
     }
