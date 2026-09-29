@@ -171,17 +171,19 @@ bool RouterAdvertisementDaemon::CreateRASocket()
         return false;
     }
     uint32_t hoplimitNew = DEFAULT_HOP_LIMIT;
-    int receiveHop = 1;
-    if (setsockopt(socket_, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &receiveHop, sizeof(receiveHop)) < 0) {
-        CloseRaSocket();
-        return false;
-    }
-    ipv6_mreq group{};
-    inet_pton(AF_INET6, "ff02::2", &group.ipv6mr_multiaddr);
-    group.ipv6mr_interface = raParams_->index_;
-    if (setsockopt(socket_, IPPROTO_IPV6, IPV6_JOIN_GROUP, &group, sizeof(group)) < 0) {
-        CloseRaSocket();
-        return false;
+    if (raParams_->layer3_) {
+        int receiveHop = 1;
+        if (setsockopt(socket_, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &receiveHop, sizeof(receiveHop)) < 0) {
+            CloseRaSocket();
+            return false;
+        }
+        ipv6_mreq group{};
+        inet_pton(AF_INET6, "ff02::2", &group.ipv6mr_multiaddr);
+        group.ipv6mr_interface = raParams_->index_;
+        if (setsockopt(socket_, IPPROTO_IPV6, IPV6_JOIN_GROUP, &group, sizeof(group)) < 0) {
+            CloseRaSocket();
+            return false;
+        }
     }
     if (setsockopt(socket_, IPPROTO_IPV6, IPV6_UNICAST_HOPS, (void *)&hoplimitNew, sizeof(hoplimitNew)) == -1) {
         NETMGR_EXT_LOG_E(" setsockopt IPV6_UNICAST_HOPS fail");
@@ -236,46 +238,74 @@ void RouterAdvertisementDaemon::ProcessSendRaPacket()
 void RouterAdvertisementDaemon::RunRecvRsThread()
 {
     NETMGR_EXT_LOG_I("Start to receive Rs thread, socket[%{public}d]", socket_);
+    const bool layer3 = raParams_->layer3_;
     sockaddr_in6 solicitor = {};
     uint8_t solicitation[IPV6_MIN_MTU] = {};
     while (IsSocketValid() && !stopRaThread_) {
         if (memset_s(solicitation, sizeof(solicitation), 0, sizeof(solicitation)) != EOK) {
             break;
         }
-        iovec buffer{solicitation, sizeof(solicitation)};
-        alignas(cmsghdr) char control[CMSG_SPACE(sizeof(int))]{};
-        msghdr message{};
-        message.msg_name = &solicitor; message.msg_namelen = sizeof(solicitor);
-        message.msg_iov = &buffer; message.msg_iovlen = 1;
-        message.msg_control = control; message.msg_controllen = sizeof(control);
-        auto rval = recvmsg(socket_, &message, 0);
+        ssize_t rval = 0;
+        int hops = -1;
+        int messageFlags = 0;
+        if (layer3) {
+            iovec buffer{solicitation, sizeof(solicitation)};
+            alignas(cmsghdr) char control[CMSG_SPACE(sizeof(int))]{};
+            msghdr message{};
+            message.msg_name = &solicitor;
+            message.msg_namelen = sizeof(solicitor);
+            message.msg_iov = &buffer;
+            message.msg_iovlen = 1;
+            message.msg_control = control;
+            message.msg_controllen = sizeof(control);
+            rval = recvmsg(socket_, &message, 0);
+            messageFlags = message.msg_flags;
+            for (auto c = CMSG_FIRSTHDR(&message); c; c = CMSG_NXTHDR(&message, c)) {
+                if (c->cmsg_level == IPPROTO_IPV6 && c->cmsg_type == IPV6_HOPLIMIT &&
+                    c->cmsg_len >= CMSG_LEN(sizeof(int))) {
+                    memcpy(&hops, CMSG_DATA(c), sizeof(hops));
+                }
+            }
+        } else {
+            socklen_t sendLen = sizeof(solicitor);
+            rval = recvfrom(socket_, reinterpret_cast<char *>(solicitation), sizeof(solicitation), 0,
+                            reinterpret_cast<sockaddr *>(&solicitor), &sendLen);
+        }
         if (rval <= 0 && errno != EAGAIN && errno != EINTR) {
             NETMGR_EXT_LOG_E("recvfrom failed, rval[%{public}zd], errno[%{public}d]", rval, errno);
             break;
         }
-        int hops = -1;
-        for (auto c = CMSG_FIRSTHDR(&message); c; c = CMSG_NXTHDR(&message, c)) {
-            if (c->cmsg_level == IPPROTO_IPV6 && c->cmsg_type == IPV6_HOPLIMIT && c->cmsg_len >= CMSG_LEN(sizeof(int)))
-                memcpy(&hops, CMSG_DATA(c), sizeof(hops));
-        }
-        if (rval < 8 || solicitation[0] != ICMPV6_ND_ROUTER_SOLICIT_TYPE || solicitation[1] != 0 || hops != 255 ||
-            (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) != 0 ||
-            (!IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr) && !IN6_IS_ADDR_LINKLOCAL(&solicitor.sin6_addr))) {
+        if (rval <= 0 || solicitation[0] != ICMPV6_ND_ROUTER_SOLICIT_TYPE) {
             continue;
         }
-        bool valid = true;
-        for (size_t i = 8; i < static_cast<size_t>(rval);) {
-            if (static_cast<size_t>(rval) - i < 2 || solicitation[i + 1] == 0 ||
-                size_t(solicitation[i + 1]) * 8 > static_cast<size_t>(rval) - i ||
-                (solicitation[i] == 1 && (solicitation[i + 1] != 1 || IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr)))) {
-                valid = false; break;
+        if (layer3) {
+            if (rval < 8 || solicitation[1] != 0 || hops != 255 ||
+                (messageFlags & (MSG_TRUNC | MSG_CTRUNC)) != 0 ||
+                (!IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr) && !IN6_IS_ADDR_LINKLOCAL(&solicitor.sin6_addr))) {
+                continue;
             }
-            i += size_t(solicitation[i + 1]) * 8;
+            bool valid = true;
+            for (size_t i = 8; i < static_cast<size_t>(rval);) {
+                if (static_cast<size_t>(rval) - i < 2 || solicitation[i + 1] == 0 ||
+                    size_t(solicitation[i + 1]) * 8 > static_cast<size_t>(rval) - i ||
+                    (solicitation[i] == 1 &&
+                    (solicitation[i + 1] != 1 || IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr)))) {
+                    valid = false;
+                    break;
+                }
+                i += size_t(solicitation[i + 1]) * 8;
+            }
+            if (!valid) {
+                continue;
+            }
         }
-        if (!valid) continue;
         std::lock_guard<std::mutex> lock(mutex_);
-        if (IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr)) solicitor = dstIpv6Addr_;
-        solicitor.sin6_scope_id = raParams_->index_;
+        if (layer3) {
+            if (IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr)) {
+                solicitor = dstIpv6Addr_;
+            }
+            solicitor.sin6_scope_id = raParams_->index_;
+        }
         if (AssembleRaLocked()) {
             MaybeSendRa(solicitor);
         }

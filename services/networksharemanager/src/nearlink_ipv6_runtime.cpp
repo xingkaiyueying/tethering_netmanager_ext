@@ -433,14 +433,14 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
     }
     std::string announcedPrefix = gatewayReady ? prefix_ : "";
     bool changed = announcedPrefix != advertisedPrefix_ || dns != dns_;
-    PublishAdvertisement(params, dns, changed);
-    if (raStarted_) {
+    bool published = PublishAdvertisement(params, dns, changed);
+    if (published) {
         advertisedPrefix_ = announcedPrefix;
     }
-    return gatewayReady && raStarted_;
+    return gatewayReady && published;
 }
 
-void NearlinkIpv6Runtime::PublishAdvertisement(const RaParams &params, const std::string &dns, bool changed)
+bool NearlinkIpv6Runtime::PublishAdvertisement(const RaParams &params, const std::string &dns, bool changed)
 {
     if (dns != dns_ && !dns_.empty() && raStarted_) {
         // Explicitly remove the old DNS source before advertising its replacement.
@@ -451,17 +451,23 @@ void NearlinkIpv6Runtime::PublishAdvertisement(const RaParams &params, const std
         withdraw.dnses_.push_back(old);
         withdraw.rdnssLifetime_ = 0;
         daemon_->BuildNewRa(withdraw);
-        (void)daemon_->AdvertiseNow();
+        if (!daemon_->AdvertiseNow()) {
+            return false; // Keep the old DNS pending for withdrawal on the next reconciliation.
+        }
     }
     daemon_->BuildNewRa(params);
     if (!raStarted_) {
         raStarted_ = daemon_->StartRa() == 0;
     }
-    if (raStarted_ && (changed || lastRouterLifetime_ != params.routerLifetime_)) {
-        (void)daemon_->AdvertiseNow();
+    if (!raStarted_) {
+        return false;
+    }
+    if ((changed || lastRouterLifetime_ != params.routerLifetime_) && !daemon_->AdvertiseNow()) {
+        return false;
     }
     lastRouterLifetime_ = params.routerLifetime_;
     dns_ = dns;
+    return true;
 }
 
 bool NearlinkIpv6Runtime::SelectPrefix(std::string &prefix, std::string &dns, bool configured,

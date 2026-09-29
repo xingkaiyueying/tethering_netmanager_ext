@@ -43,7 +43,7 @@ private:
     bool SetToken();
     bool SelectPrefix(std::string &prefix, std::string &dns, bool configured,
                       std::chrono::steady_clock::time_point now);
-    void PublishAdvertisement(const RaParams &params, const std::string &dns, bool changed);
+    bool PublishAdvertisement(const RaParams &params, const std::string &dns, bool changed);
     void ExpireRetiredPrefixes(std::chrono::steady_clock::time_point now);
     bool ReconcileGatewayAddress();
     uint32_t ifindex_{0};

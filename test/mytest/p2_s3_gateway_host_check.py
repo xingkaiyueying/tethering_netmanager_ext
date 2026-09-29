@@ -34,9 +34,9 @@ struct IpPrefix {in6_addr prefix{};uint32_t prefixesLength=0,validLifetime=0,pre
 struct RaParams {bool layer3_=false;std::string macAddr_;int mtu_=0;uint32_t routerLifetime_=0,rdnssLifetime_=0;
 std::vector<IpPrefix> prefixes_;std::vector<in6_addr> dnses_;};
 class RouterAdvertisementDaemon {public:
-inline static int starts=0;inline static std::vector<RaParams> sent;RaParams params;
+inline static int starts=0;inline static int failNext=0;inline static std::vector<RaParams> sent;RaParams params;
 int Init(const char*){return 0;}int StartRa(){++starts;return 0;}void StopRa(){}
-void BuildNewRa(const RaParams&p){params=p;}bool AdvertiseNow(){sent.push_back(params);return true;}
+void BuildNewRa(const RaParams&p){params=p;}bool AdvertiseNow(){if(failNext>0){--failNext;return false;}sent.push_back(params);return true;}
 };
 }
 ''')
@@ -104,10 +104,19 @@ int main(){
  kernelAddress(runtime.gateway_,0x40); // Tentative address must not be advertised as DNS or a prefix.
  assert(!runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==0);
  kernelAddress(runtime.gateway_,0);
+ RouterAdvertisementDaemon::failNext=1;
+ assert(!runtime.Advertise(&up,true));assert(runtime.advertisedPrefix_.empty());
+ assert(runtime.dns_.empty()); // A failed first RA cannot publish success in the controller.
  assert(runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==1);
  assert(runtime.daemon_->params.dnses_.size()==1);
  assert(runtime.daemon_->params.prefixes_.size()==1);
  assert(runtime.daemon_->params.routerLifetime_==180);
+ RouterAdvertisementDaemon::failNext=1;
+ assert(!runtime.Advertise(&up,true,false));assert(!runtime.dns_.empty());
+ assert(runtime.Advertise(&up,true,false));assert(runtime.dns_.empty());
+ RouterAdvertisementDaemon::failNext=1;
+ assert(!runtime.Advertise(&up,true,true));assert(runtime.dns_.empty());
+ assert(runtime.Advertise(&up,true,true));assert(!runtime.dns_.empty());
  assert(runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==1);
  up.netAddrList_.clear();up.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:30::abcd"});
  assert(!runtime.Advertise(&up,true));assert(runtime.retired_.size()==1);

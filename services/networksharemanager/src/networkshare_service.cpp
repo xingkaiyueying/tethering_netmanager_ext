@@ -317,21 +317,27 @@ int32_t NetworkShareService::IsNearlinkIpShareSupported(const std::string &peerA
 int32_t NetworkShareService::QueryNearlinkIpShareCapabilities(const std::string &peerAddress, NearlinkIpShareCapabilities &capabilities)
 {
     int32_t permission = CheckNearlinkIpSharePermission();
-    if (permission != NETMANAGER_EXT_SUCCESS) return permission;
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
     return NearlinkIpShareController::GetInstance()->QueryCapabilities(peerAddress, capabilities);
 }
 
 int32_t NetworkShareService::StartNearlinkGatewayWithMode(const std::string &peerAddress, int32_t mode)
 {
     int32_t permission = CheckNearlinkIpSharePermission();
-    if (permission != NETMANAGER_EXT_SUCCESS) return permission;
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
     return NearlinkIpShareController::GetInstance()->StartGateway(peerAddress, mode);
 }
 
 int32_t NetworkShareService::StartNearlinkTerminalWithMode(const std::string &peerAddress, int32_t mode)
 {
     int32_t permission = CheckNearlinkIpSharePermission();
-    if (permission != NETMANAGER_EXT_SUCCESS) return permission;
+    if (permission != NETMANAGER_EXT_SUCCESS) {
+        return permission;
+    }
     return NearlinkIpShareController::GetInstance()->StartTerminal(peerAddress, mode);
 }
 
