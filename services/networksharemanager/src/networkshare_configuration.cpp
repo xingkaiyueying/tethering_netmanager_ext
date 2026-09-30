@@ -258,6 +258,10 @@ void NetworkShareConfiguration::ParseConfigData(Config_Value cfgValue, std::stri
         nearlinkIpv4Str_ = strVal;
     } else if (cfgValue == Config_Value::CONFIG_VALUE_NEARLINK_DHCP_START) {
         nearlinkDhcpStart_ = strVal;
+    } else if (cfgValue == Config_Value::CONFIG_VALUE_NEARLINK_IPV4_POOL) {
+        nearlinkIpv4Pool_ = strVal;
+    } else if (cfgValue == Config_Value::CONFIG_VALUE_NEARLINK_IPV6_POOL) {
+        nearlinkIpv6Pool_ = strVal;
     } else if (cfgValue == Config_Value::CONFIG_VALUE_NEARLINK_DHCP_END) {
         nearlinkDhcpEnd_ = strVal;
     } else {
@@ -304,6 +308,8 @@ int32_t NetworkShareConfiguration::LoadConfigData()
     wifiRegexs_.clear();
     blueToothRegexs_.clear();
     nearlinkRegexs_.clear();
+    configMap_["nearlink_ipv4_pool"] = Config_Value::CONFIG_VALUE_NEARLINK_IPV4_POOL;
+    configMap_["nearlink_ipv6_pool"] = Config_Value::CONFIG_VALUE_NEARLINK_IPV6_POOL;
 
     std::vector<std::string> strVec = ReadConfigFile();
     if (strVec.size() == 0) {

@@ -19,6 +19,8 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <map>
+#include "nearlink_peer_address_pool.h"
 #include <mutex>
 #include <string>
 
@@ -67,6 +69,23 @@ private:
     int32_t Stop(NearlinkIpShareRole expectedRole);
     void HandleNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
     void ConfigureGateway();
+    void ReconcileGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
+    void ConfigureGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
+    struct PeerAddressContext {
+        uint64_t generation{0};
+        uint32_t slot{0}, ifindex{0};
+        int32_t mode{0};
+        std::string iface;
+        NearlinkPeerAddresses addresses;
+        bool interfaceAdded{false}, addressAdded{false}, routeAdded{false}, dhcpStarted{false};
+        bool ipv6Prepared{false}, ipv6Ready{false};
+        int32_t ipv4Error{0}, ipv6Error{0};
+        std::chrono::steady_clock::time_point ipv6PendingSince{};
+        NearlinkIpv6Runtime ipv6;
+    };
+    bool CleanupGatewayPeer(PeerAddressContext &peer);
+    int32_t ConfigureGatewayPeerIpv4(PeerAddressContext &peer, const NetLinkInfo *upstream);
+    std::map<uint32_t, PeerAddressContext> addressPeers_;
     int32_t ConfigureGatewayIpv4();
     void StartTerminalDhcp();
     void ConfigureUpstream();

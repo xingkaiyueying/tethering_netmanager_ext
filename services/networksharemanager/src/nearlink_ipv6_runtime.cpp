@@ -163,7 +163,7 @@ bool DeriveDownstreamPrefix(const NetLinkInfo *upstream, in6_addr &downstream, s
 } // namespace
 bool NearlinkIpv6Runtime::Set(const std::string &key, const std::string &value)
 {
-    auto path = "/proc/sys/net/ipv6/conf/sleip0/" + key;
+    auto path = "/proc/sys/net/ipv6/conf/" + iface_ + "/" + key;
     std::ifstream input(path);
     std::string old;
     if (!(input >> old)) {
@@ -179,7 +179,7 @@ bool NearlinkIpv6Runtime::Set(const std::string &key, const std::string &value)
 }
 bool NearlinkIpv6Runtime::AddAddress(const std::string &address)
 {
-    int32_t ret = NetsysController::GetInstance().AddInterfaceAddress(IFACE, address, 64);
+    int32_t ret = NetsysController::GetInstance().AddInterfaceAddress(iface_.c_str(), address, 64);
     if (ret != 0) {
         return false; // Do not claim or later delete an address owned by someone else.
     }
@@ -242,10 +242,14 @@ bool NearlinkIpv6Runtime::SetToken()
     }
     return ok;
 }
-bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2)
+bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2, const std::string &iface,
+                                  const std::string &prefix)
 {
+    if (iface.size() < 6 || iface.size() >= IFNAMSIZ || iface.compare(0, 5, "sleip") != 0 ||
+        !std::all_of(iface.begin() + 5, iface.end(), [](char c) { return c >= '0' && c <= '9'; }))
+        return false;
     if (prepared_) {
-        return ifindex_ == if_nametoindex(IFACE);
+        return iface == iface_ && prefix == configuredPrefix_ && ifindex_ == if_nametoindex(iface_.c_str());
     }
     if (ifindex_ && !Cleanup()) {
         return false;
@@ -254,7 +258,9 @@ bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2)
     if (!Layer2Token(layer2, token)) {
         return false;
     }
-    ifindex_ = if_nametoindex(IFACE);
+    iface_ = iface;
+    configuredPrefix_ = prefix;
+    ifindex_ = if_nametoindex(iface_.c_str());
     layer2_ = layer2;
     if (!ifindex_) {
         return false;
@@ -264,7 +270,7 @@ bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2)
         return false;
     }
     ifreq request{};
-    memcpy(request.ifr_name, IFACE, sizeof("sleip0"));
+    memcpy(request.ifr_name, iface_.c_str(), iface_.size() + 1);
     bool ok = ioctl(fd, SIOCGIFFLAGS, &request) == 0;
     if (ok) {
         flags_ = request.ifr_flags;
@@ -358,7 +364,9 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
     ExpireRetiredPrefixes(now);
     std::string prefix, dns;
     in6_addr binary{}, resolver{}, token{};
-    bool configured = DeriveDownstreamPrefix(upstream, binary, prefix) && Layer2Token(layer2_, token);
+    bool configured = (configuredPrefix_.empty() ? DeriveDownstreamPrefix(upstream, binary, prefix)
+                                                 : (prefix = configuredPrefix_, Prefix(prefix, binary))) &&
+                      Layer2Token(layer2_, token);
     if (configured) {
         resolver = binary;
         std::copy(token.s6_addr + 8, token.s6_addr + 16, resolver.s6_addr + 8);
@@ -385,7 +393,7 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
     configured = SelectPrefix(prefix, dns, configured, now);
     if (!daemon_ && (!prefix_.empty() || !retired_.empty())) {
         daemon_ = std::make_shared<RouterAdvertisementDaemon>();
-        if (daemon_->Init(IFACE) != 0) {
+        if (daemon_->Init(iface_.c_str()) != 0) {
             daemon_.reset();
             return false;
         }
@@ -514,7 +522,7 @@ void NearlinkIpv6Runtime::ExpireRetiredPrefixes(std::chrono::steady_clock::time_
         }
         bool released = true;
         if (it->route) {
-            if (RouteRemoved(NetsysController::GetInstance().NetworkRemoveRoute(LOCAL_NETWORK_ID, IFACE,
+            if (RouteRemoved(NetsysController::GetInstance().NetworkRemoveRoute(LOCAL_NETWORK_ID, iface_.c_str(),
                                                                                 it->prefix + "/64", ""))) {
                 it->route = false;
             } else {
@@ -522,7 +530,7 @@ void NearlinkIpv6Runtime::ExpireRetiredPrefixes(std::chrono::steady_clock::time_
             }
         }
         if (std::find(addresses_.begin(), addresses_.end(), it->gateway) != addresses_.end()) {
-            if (AddressRemoved(NetsysController::GetInstance().DelInterfaceAddress(IFACE, it->gateway, 64))) {
+            if (AddressRemoved(NetsysController::GetInstance().DelInterfaceAddress(iface_.c_str(), it->gateway, 64))) {
                 addresses_.erase(std::remove(addresses_.begin(), addresses_.end(), it->gateway), addresses_.end());
             } else {
                 released = false;
@@ -542,7 +550,8 @@ bool NearlinkIpv6Runtime::ReconcileGatewayAddress()
         gatewayAddressOwned_ = AddAddress(gateway_);
     }
     if (gatewayAddressOwned_ && !routeOwned_) {
-        int32_t ret = NetsysController::GetInstance().NetworkAddRoute(LOCAL_NETWORK_ID, IFACE, prefix_ + "/64", "");
+        int32_t ret =
+            NetsysController::GetInstance().NetworkAddRoute(LOCAL_NETWORK_ID, iface_.c_str(), prefix_ + "/64", "");
         routeOwned_ = ret == 0 || ret == -EEXIST;
     }
     bool usable = false;
@@ -556,7 +565,7 @@ bool NearlinkIpv6Runtime::ReconcileGatewayAddress()
         snprintf(expectedHex + i * 2, 3, "%02x", expected.s6_addr[i]);
     }
     while (kernel >> hex >> std::hex >> index >> length >> scope >> flags >> iface) {
-        if (iface == IFACE && index == ifindex_ && hex == expectedHex && !(flags & UNUSABLE_ADDRESS_FLAGS)) {
+        if (iface == iface_ && index == ifindex_ && hex == expectedHex && !(flags & UNUSABLE_ADDRESS_FLAGS)) {
             usable = true;
         }
     }
@@ -568,14 +577,14 @@ bool NearlinkIpv6Runtime::Cleanup()
         daemon_->StopRa();
         daemon_.reset();
     }
-    if (ifindex_ != if_nametoindex(IFACE)) {
+    if (ifindex_ != if_nametoindex(iface_.c_str())) {
         *this = NearlinkIpv6Runtime{};
         return true;
     }
     bool ok = true;
     for (auto &old : retired_) {
         if (old.route) {
-            if (RouteRemoved(NetsysController::GetInstance().NetworkRemoveRoute(LOCAL_NETWORK_ID, IFACE,
+            if (RouteRemoved(NetsysController::GetInstance().NetworkRemoveRoute(LOCAL_NETWORK_ID, iface_.c_str(),
                                                                                 old.prefix + "/64", ""))) {
                 old.route = false;
             } else {
@@ -584,15 +593,15 @@ bool NearlinkIpv6Runtime::Cleanup()
         }
     }
     if (routeOwned_) {
-        if (RouteRemoved(
-                NetsysController::GetInstance().NetworkRemoveRoute(LOCAL_NETWORK_ID, IFACE, prefix_ + "/64", ""))) {
+        if (RouteRemoved(NetsysController::GetInstance().NetworkRemoveRoute(LOCAL_NETWORK_ID, iface_.c_str(),
+                                                                            prefix_ + "/64", ""))) {
             routeOwned_ = false;
         } else {
             ok = false;
         }
     }
     for (auto it = addresses_.begin(); it != addresses_.end();) {
-        auto ret = NetsysController::GetInstance().DelInterfaceAddress(IFACE, *it, 64);
+        auto ret = NetsysController::GetInstance().DelInterfaceAddress(iface_.c_str(), *it, 64);
         if (AddressRemoved(ret)) {
             it = addresses_.erase(it);
         } else {
@@ -617,7 +626,7 @@ bool NearlinkIpv6Runtime::Cleanup()
     if (flagsOwned_) {
         int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
         ifreq request{};
-        memcpy(request.ifr_name, IFACE, sizeof("sleip0"));
+        memcpy(request.ifr_name, iface_.c_str(), iface_.size() + 1);
         request.ifr_flags = flags_;
         if (fd >= 0 && ioctl(fd, SIOCSIFFLAGS, &request) == 0) {
             flagsOwned_ = false;

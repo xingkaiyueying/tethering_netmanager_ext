@@ -35,7 +35,7 @@ struct RaParams {bool layer3_=false;std::string macAddr_;int mtu_=0;uint32_t rou
 std::vector<IpPrefix> prefixes_;std::vector<in6_addr> dnses_;};
 class RouterAdvertisementDaemon {public:
 inline static int starts=0;inline static int failNext=0;inline static std::vector<RaParams> sent;RaParams params;
-int Init(const char*){return 0;}int StartRa(){++starts;return 0;}void StopRa(){}
+std::string iface;int Init(const char*s){iface=s;return 0;}int StartRa(){++starts;return 0;}void StopRa(){}
 void BuildNewRa(const RaParams&p){params=p;}bool AdvertiseNow(){if(failNext>0){--failNext;return false;}sent.push_back(params);return true;}
 };
 }
@@ -49,9 +49,11 @@ struct Route {Address destination_;};struct NetLinkInfo {std::string ifaceName_;
 }
 ''')
     put('nearlink_ipv6_runtime.h', (src / 'include/nearlink_ipv6_runtime.h').read_text())
+    put('nearlink_peer_address_pool.h', (src / 'include/nearlink_peer_address_pool.h').read_text())
     advertise = advertise.replace('/proc/net/if_inet6', 'if_inet6.txt')
     put('test.cpp', r'''
 #include <memory>
+#include <set>
 #include <chrono>
 #include <map>
 #include <algorithm>
@@ -65,6 +67,7 @@ struct Route {Address destination_;};struct NetLinkInfo {std::string ifaceName_;
 #define private public
 #include "nearlink_ipv6_runtime.h"
 #undef private
+#include "nearlink_peer_address_pool.h"
 namespace OHOS::NetManagerStandard {
 class NetsysController {public:
 inline static std::vector<std::string> removed;inline static bool failRemove=false;
@@ -84,12 +87,12 @@ bool HasIpv6DefaultRouteOnInterface(const std::string &iface)
 ''' + advertise + r'''
 }
 using namespace OHOS::NetManagerStandard;
-void kernelAddress(const std::string &address, unsigned flags)
+void kernelAddress(const std::string &address, unsigned flags, const std::string &iface="sleip0")
 {
  in6_addr binary{};assert(inet_pton(AF_INET6,address.c_str(),&binary)==1);
  std::ofstream f("if_inet6.txt");
  for(unsigned char byte:binary.s6_addr){char hex[3]{};snprintf(hex,sizeof(hex),"%02x",byte);f<<hex;}
- f<<" 07 40 00 "<<std::hex<<flags<<" sleip0\n";
+ f<<" 07 40 00 "<<std::hex<<flags<<" "<<iface<<"\n";
 }
 int main(){
  NearlinkIpv6Runtime runtime;runtime.ifindex_=7;runtime.layer2_="02:11:22:33:44:55";
@@ -177,6 +180,35 @@ int main(){
  routedInterface.clear();
  missingRoute.Advertise(&cellular,true);
  assert(missingRoute.daemon_->params.routerLifetime_==0);
+ // Product pools scale beyond three seats, reject overlap/insufficient and malformed pools.
+ for (unsigned capacity : {1u,2u,3u,5u,7u,32u}) {
+  std::set<std::string> subnets,prefixes;
+  for(unsigned slot=0;slot<capacity;++slot) {
+   NearlinkPeerAddresses address;
+   assert(NearlinkPeerAddresses::Allocate("172.24.0.0/16","fd77:6e6c:6970::/48",capacity,slot,address,true));
+   assert(subnets.insert(address.subnet).second && prefixes.insert(address.prefix).second);
+   assert(address.Conflicts(address.gateway,24) && !address.Conflicts("192.168.62.1",24));
+  }
+ }
+ NearlinkPeerAddresses address;
+ assert(!NearlinkPeerAddresses::Allocate("172.24.0.1/16","fd77::/48",2,0,address,true));
+ assert(!NearlinkPeerAddresses::Allocate("172.24.0.0/24","fd77::/64",2,0,address,true));
+ assert(!NearlinkPeerAddresses::Allocate("172.24.0.0/16","fd77::/64",2,0,address,true));
+ assert(!NearlinkPeerAddresses::Allocate("8.0.0.0/8","fd77::/48",2,0,address,true));
+ NearlinkIpv6Runtime a,b;
+ a.iface_="sleip0";a.ifindex_=7;a.layer2_="02:11:22:33:44:55";a.configuredPrefix_="fd77:6e6c:6970::";
+ b.iface_="sleip1";b.ifindex_=7;b.layer2_=a.layer2_;b.configuredPrefix_="fd77:6e6c:6970:1::";
+ {std::ofstream f("if_inet6.txt");}
+ assert(!a.Advertise(nullptr,false) && !b.Advertise(nullptr,false));
+ kernelAddress(a.gateway_,0);assert(a.Advertise(nullptr,false));
+ assert(!b.Advertise(nullptr,false)); // slot zero's DAD evidence cannot validate slot one
+ kernelAddress(b.gateway_,0x08,"sleip1");assert(!b.Advertise(nullptr,false));
+ kernelAddress(b.gateway_,0,"sleip1");assert(b.Advertise(nullptr,false));
+ assert(a.daemon_->iface=="sleip0" && b.daemon_->iface=="sleip1");
+ assert(a.prefix_!=b.prefix_ && a.gateway_!=b.gateway_);
+ assert(a.daemon_->params.routerLifetime_==0 && b.daemon_->params.routerLifetime_==0);
+ assert(a.daemon_->params.rdnssLifetime_==180 && b.daemon_->params.rdnssLifetime_==180);
+ assert(a.daemon_->params.prefixes_.size()==1 && b.daemon_->params.prefixes_.size()==1);
  puts("gateway: automatic PAN-style prefix, L2 EUI-64, automatic RDNSS, collision guard, renumber/withdrawal PASS");
 }
 ''')

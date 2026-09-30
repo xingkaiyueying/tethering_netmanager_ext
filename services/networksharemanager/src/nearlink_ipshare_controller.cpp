@@ -443,6 +443,22 @@ int32_t NearlinkIpShareController::StartGatewayAny(int32_t mode, int32_t maxTerm
     int32_t ret = GetSupportedMaxTerminals(supported);
     if (ret != NETMANAGER_EXT_SUCCESS) return ret;
     if (maxTerminals < 1 || maxTerminals > supported) return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
+    // Validate all seats before IPoSL starts accepting requests.
+    NetHandle network;
+    NetLinkInfo upstream;
+    bool hasUpstream = NetConnClient::GetInstance().GetDefaultNet(network) == 0 &&
+                       NetConnClient::GetInstance().GetConnectionProperties(network, upstream) == 0;
+    for (int32_t slot = 0; slot < maxTerminals; ++slot) {
+        NearlinkPeerAddresses addresses;
+        if (!NearlinkPeerAddresses::Allocate(configuration_.GetNearlinkIpv4Pool(), configuration_.GetNearlinkIpv6Pool(),
+                                             maxTerminals, slot, addresses, mode == 3))
+            return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
+        if (hasUpstream)
+            for (const auto &address : upstream.netAddrList_) {
+                if (address.family_ == AF_INET && addresses.Conflicts(address.address_, address.prefixlen_))
+                    return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
+            }
+    }
     return Start(NearlinkIpShareRole::GATEWAY, "", mode, maxTerminals);
 }
 
@@ -687,46 +703,11 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
         return;
     }
     if (multiGateway_ && role == NearlinkIpShareRole::GATEWAY) {
-        if (status.state == OHOS::Nearlink::NearlinkIpShareState::CHANNEL_READY &&
-            status.ifaceName == IFACE_NAME) {
-            interfaceIndex_ = if_nametoindex(IFACE_NAME);
-            gatewayIfaceMissingSince_ = {};
-            ConfigureGateway();
-            ConfigureUpstream();
-            if (!maintenancePending_) {
-                maintenancePending_ = true;
-                ScheduleMaintenance(generation_);
-            }
-            return;
+        ReconcileGatewayPeers(status);
+        if (!maintenancePending_) {
+            maintenancePending_ = true;
+            ScheduleMaintenance(generation_);
         }
-        if (status.ifaceName.empty()) {
-            // Slot zero left. Maintenance must not recreate its L3 resources.
-            channelReady_ = false;
-            gatewayIfaceMissingSince_ = {};
-            CleanupUpstream();
-            if (dhcpServerStarted_ && StopDhcpServer(IFACE_NAME) == DHCP_SUCCESS) dhcpServerStarted_ = false;
-            if (localRouteAdded_) {
-                int32_t ret = NetsysController::GetInstance().NetworkRemoveRoute(
-                    IP_SHARE_LOCAL_NET_ID, IFACE_NAME, LOCAL_SUBNET, DIRECT_NEXT_HOP);
-                NETMGR_EXT_LOG_I("[NearlinkIpShare][Cleanup] slot route code=%{public}d", ret);
-                if (ret == NETSYS_SUCCESS || ret == -ESRCH) localRouteAdded_ = false;
-            }
-            if (!localRouteAdded_ && localInterfaceAdded_ && NetsysController::GetInstance().NetworkRemoveInterface(
-                IP_SHARE_LOCAL_NET_ID, IFACE_NAME) == NETSYS_SUCCESS) localInterfaceAdded_ = false;
-            if (addressConfigured_) {
-                auto ret = NetsysController::GetInstance().DelInterfaceAddress(
-                    IFACE_NAME, configuration_.GetNearlinkIpv4Addr(), PREFIX_LENGTH);
-                if (ret == NETSYS_SUCCESS || ret == -ENODEV || ret == -EADDRNOTAVAIL ||
-                    IsGatewayAddressAbsent(&NetsysController::GetInterfaceConfig)) addressConfigured_ = false;
-            }
-            interfaceIndex_ = 0;
-            std::lock_guard lock(mutex_);
-            status_.ipv4 = NearlinkIpShareFamilyStatus{};
-            status_.ipv4Address.clear();
-            status_.hasUpstream = false;
-        }
-        Publish(status.serviceReady ? NearlinkIpShareState::SERVING_NO_UPSTREAM :
-            NearlinkIpShareState::STARTING);
         return;
     }
     if (role == NearlinkIpShareRole::GATEWAY && (status.state == OHOS::Nearlink::NearlinkIpShareState::IFACE_READY ||
@@ -749,6 +730,16 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
         state <= NearlinkIpShareState::CHANNEL_READY) {
         Publish(state);
     }
+}
+
+void NearlinkIpShareController::ReconcileGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link)
+{
+    if (!upstreamCallback_) {
+        upstreamCallback_ = new (std::nothrow) UpstreamCallback();
+        if (upstreamCallback_ && NetConnClient::GetInstance().RegisterNetConnCallback(upstreamCallback_) != 0)
+            upstreamCallback_ = nullptr;
+    }
+    ConfigureGatewayPeers(link);
 }
 
 void NearlinkIpShareController::ConfigureGateway()
@@ -848,6 +839,13 @@ void NearlinkIpShareController::OnUpstreamChanged()
 
 void NearlinkIpShareController::ConfigureUpstream()
 {
+    if (multiGateway_) {
+        OHOS::Nearlink::NearlinkIpShareStatus current;
+        if (OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current) == 0 &&
+            current.generation == linkGeneration_)
+            ReconcileGatewayPeers(current);
+        return;
+    }
     if (!localInterfaceAdded_ || (multiGateway_ && !channelReady_)) {
         return;
     }
@@ -1544,26 +1542,16 @@ void NearlinkIpShareController::ScheduleMaintenance(uint64_t generation)
                 return;
             }
             if (current.role == OHOS::Nearlink::NearlinkIpShareRole::GATEWAY) {
-                // The TUN can vanish before NearLink publishes the peer-release event.
-                // Wait for that event without reconfiguring the vanished interface.
-                if (self->multiGateway_ && current.ifaceName == IFACE_NAME &&
-                    if_nametoindex(IFACE_NAME) == 0) {
-                    auto now = std::chrono::steady_clock::now();
-                    if (self->gatewayIfaceMissingSince_ == std::chrono::steady_clock::time_point{}) {
-                        self->gatewayIfaceMissingSince_ = now;
-                    } else if (now - self->gatewayIfaceMissingSince_ >= std::chrono::seconds(3)) {
+                if (self->multiGateway_) {
+                    if (current.generation != self->linkGeneration_) {
                         self->Fail("LINK", NETMANAGER_EXT_ERR_OPERATION_FAILED);
                         return;
                     }
+                    self->ReconcileGatewayPeers(current);
                     self->ScheduleMaintenance(generation);
                     return;
                 }
                 self->HandleNearlinkStatus(current);
-                if (self->multiGateway_ && (!self->channelReady_ || current.ifaceName.empty())) {
-                    self->gatewayIfaceMissingSince_ = {};
-                    self->ScheduleMaintenance(generation);
-                    return;
-                }
                 if (if_nametoindex(IFACE_NAME) != self->interfaceIndex_) {
                     self->Fail("LINK", NETMANAGER_EXT_ERR_OPERATION_FAILED);
                     return;
@@ -1646,6 +1634,14 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
         netSupplierId_ = 0;
         supplierAvailable_ = false;
         appliedLink_ = NetLinkInfo{};
+    }
+    for (auto it = addressPeers_.begin(); it != addressPeers_.end();) {
+        if (CleanupGatewayPeer(it->second))
+            it = addressPeers_.erase(it);
+        else {
+            result("peer address resources", NETMANAGER_EXT_ERR_OPERATION_FAILED);
+            ++it;
+        }
     }
     result("NAT/forwarding", CleanupUpstream());
     families_ = NearlinkFamilyNetwork{};

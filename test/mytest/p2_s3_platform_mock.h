@@ -43,6 +43,9 @@ public:
     const std::string &GetNearlinkIpv4Addr() { return gateway; }
     const std::string &GetNearlinkDhcpStart() { return start; }
     const std::string &GetNearlinkDhcpEnd() { return end; }
+    std::string pool4="172.24.0.0/16", pool6="fd77:6e6c:6970::/48";
+    const std::string &GetNearlinkIpv4Pool() { return pool4; }
+    const std::string &GetNearlinkIpv6Pool() { return pool6; }
 };
 struct INetAddr {
     enum { IPV4=1, IPV6=2 };
@@ -110,7 +113,7 @@ public:
     int NetworkAddInterface(int id,const char *) { assert(id==99); return call("local-add"); }
     int NetworkRemoveInterface(int,const char *) { return call("local-del"); }
     int NetworkAddRoute(int id,const char *,const char *dest,const char *via) {
-        assert(id==99 && std::string(dest)=="192.168.77.0/24" && std::string(via)=="0.0.0.0");
+        assert(id==99 && std::string(dest).find("/24")!=std::string::npos && std::string(via)=="0.0.0.0");
         return call("route-add");
     }
     int NetworkRemoveRoute(int,const char *,const char *,const char *) { return call("route-del"); }
@@ -140,6 +143,7 @@ public:
 namespace OHOS::Nearlink {
 using NearlinkIpShareRole = OHOS::NetManagerStandard::NearlinkIpShareRole;
 using NearlinkIpShareState = OHOS::NetManagerStandard::NearlinkIpShareState;
+struct NearlinkIpSharePeerLink {uint32_t slot=0;uint64_t generation=0;int32_t selectedMode=0;std::string ifaceName;bool releasing=false;};
 class NearlinkIpShareStatus { public:
     NearlinkIpShareRole role{NearlinkIpShareRole::NONE};
     NearlinkIpShareState state{NearlinkIpShareState::IDLE};
@@ -147,6 +151,7 @@ class NearlinkIpShareStatus { public:
     int32_t errorCode=0, selectedMode=0;
     uint64_t generation=0, sequence=0;
     bool serviceReady=false;
+    std::vector<NearlinkIpSharePeerLink> peerLinks;
 };
 enum class NearlinkIpShareMode { NONE=0, IPV4=1, DUAL_STACK=3 };
 using NearlinkIpShareCapabilities=OHOS::NetManagerStandard::NearlinkIpShareCapabilities;
@@ -165,6 +170,7 @@ public:
     NearlinkIpShareStatus snapshot;
     std::vector<NearlinkIpShareAddressEvidence> evidence;
     int UpdateValidatedAddress(const NearlinkIpShareAddressEvidence &e) { evidence.push_back(e); return call("evidence"); }
+    int CompleteGatewayPeerRelease(uint64_t g) { calls.push_back("peer-release:"+std::to_string(g));return 0; }
     int GetStatus(NearlinkIpShareStatus &s) { s=snapshot; return call("snapshot"); }
     int QueryNearlinkIpShareCapabilities(const std::string &, NearlinkIpShareCapabilities &) { return 0; }
     int StartNearlinkGatewayWithMode(const std::string &peer, int) { return StartGateway(peer); }

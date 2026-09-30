@@ -40,7 +40,7 @@ class Parcelable { public: virtual ~Parcelable()=default; virtual bool Marshalli
 #include "mock.h"
 namespace OHOS::NetManagerStandard {
 class NearlinkIpv6Runtime { public:
-bool Prepare(bool,const std::string&){return call("ipv6-prepare")==0;}
+bool Prepare(bool,const std::string&,const std::string& = "sleip0",const std::string& = ""){return call("ipv6-prepare")==0;}
 bool Advertise(const NetLinkInfo*,bool,bool){return call("ra")==0;}
 bool Cleanup(){return call("ipv6-cleanup")==0;}
 }; }
@@ -48,6 +48,7 @@ bool Cleanup(){return call("ipv6-cleanup")==0;}
     # Copy only the controller header so the platform runtime double is selected explicitly.
     put('nearlink_ipshare_controller.h', (source / 'include/nearlink_ipshare_controller.h').read_text())
     put('nearlink_ipshare_controller.cpp', (source / 'src/nearlink_ipshare_controller.cpp').read_text())
+    put('nearlink_peer_address.cpp', (source / 'src/nearlink_peer_address.cpp').read_text())
     put('nearlink_family_validation.h', '#pragma once\nnamespace OHOS::NetManagerStandard { struct NearlinkFamilyValidation { int ipv4=0,ipv6=0; }; inline NearlinkFamilyValidation ValidateNearlinkFamilies(int,bool,bool) {return {};} }\n')
     put('dhcp_c_api.h', '''#pragma once
 #include "mock.h"
@@ -74,6 +75,7 @@ inline int StopDhcpServer(const char*) {return call("server-stop");}
 #include "nearlink_ipshare_controller.h"
 #undef private
 #include "nearlink_ipshare_controller.cpp"
+#include "nearlink_peer_address.cpp"
 using namespace OHOS::NetManagerStandard;
 int main() {
     auto c=NearlinkIpShareController::GetInstance();
@@ -180,59 +182,73 @@ int main() {
     int32_t supported=0;assert(c->GetSupportedMaxTerminals(supported)==0 && supported==2);
     assert(c->StartGatewayAny(1,3)!=0);
     q.delayed.clear(); // Discard previous terminal sessions' maintenance ticks.
-    assert(c->StartGatewayAny(1,1)==0);q.Drain();
+    c->configuration_.pool4="172.24.0.0/24";
+    assert(c->StartGatewayAny(3,2)!=0); // preflight pool insufficient for capacity
+    c->configuration_.pool4="172.24.0.0/16";
+    assert(c->StartGatewayAny(3,2)==0);q.Drain();
     link=OHOS::Nearlink::NearlinkIpShareStatus{};
     link.role=NearlinkIpShareRole::GATEWAY;link.state=NearlinkIpShareState::SERVING_NO_UPSTREAM;
     link.generation=4;link.sequence=1;link.serviceReady=true;
     OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
     c->OnNearlinkStatus(link);q.Drain();
-    assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM);
-    assert(!c->dhcpServerStarted_ && !c->localInterfaceAdded_);
-    link.state=NearlinkIpShareState::CHANNEL_READY;link.ifaceName="sleip0";link.selectedMode=1;
-    link.sequence=2;OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
-    c->OnNearlinkStatus(link);q.Drain();
-    assert(c->dhcpServerStarted_ && c->addressConfigured_ && c->localInterfaceAdded_);
-    // The TUN disappears before NearLink's peer-release notification arrives.
-    mockIfIndex=0;
-    assert(!q.delayed.empty());auto early=q.delayed.front();q.delayed.pop_front();early();q.Drain();
-    assert(c->status_.state!=NearlinkIpShareState::ERROR && c->dhcpServerStarted_);
-    assert(c->gatewayIfaceMissingSince_ != std::chrono::steady_clock::time_point{});
-    link.state=NearlinkIpShareState::SERVING_NO_UPSTREAM;link.ifaceName.clear();link.sequence=3;
-    OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
-    errors["route-del"]=-3; // Linux ESRCH: route vanished with the released TUN.
-    c->OnNearlinkStatus(link);q.Drain();errors.clear();
-    assert(!c->dhcpServerStarted_ && !c->addressConfigured_ && !c->localInterfaceAdded_);
-    assert(!c->localRouteAdded_ && !c->channelReady_ && !c->status_.hasUpstream);
-    assert(c->gatewayIfaceMissingSince_ == std::chrono::steady_clock::time_point{});
-    assert(c->status_.ipv4Address.empty() && !c->status_.ipv4.configurationAvailable);
-    assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM);
-    // A queued maintenance tick must not revive L3 after the last peer leaves.
-    assert(!q.delayed.empty()); auto tick=q.delayed.front();q.delayed.pop_front();tick();q.Drain();
-    assert(!c->localInterfaceAdded_ && !c->dhcpServerStarted_);
-    assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM);
-    mockIfIndex=7;
-    link.state=NearlinkIpShareState::CHANNEL_READY;link.ifaceName="sleip0";link.sequence=4;
+    assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM && c->addressPeers_.empty());
+    link.peerLinks={{0,10,3,"sleip0"},{1,11,1,"sleip1"}};
+    link.state=NearlinkIpShareState::CHANNEL_READY;link.sequence=2;
     OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
     c->OnNearlinkStatus(link);q.Drain();
-    assert(c->dhcpServerStarted_ && c->addressConfigured_ && c->localInterfaceAdded_);
-    assert(c->StartGatewayAny(1,1)==0 && c->StartGatewayAny(1,2)!=0);
-    c->localRouteAdded_=true; errors["route-del"]=-3; // Retry after kernel already removed route.
-    assert(c->StopGateway()==0);q.Drain();errors.clear();
-    assert(c->status_.state==NearlinkIpShareState::IDLE);
-    // A persistently missing active TUN still fails after the release grace window.
-    q.delayed.clear();assert(c->StartGatewayAny(1,1)==0);q.Drain();
-    link.generation=5;link.sequence=1;link.state=NearlinkIpShareState::CHANNEL_READY;
+    assert(c->addressPeers_.size()==2);
+    assert(c->addressPeers_[0].dhcpStarted && c->addressPeers_[1].dhcpStarted);
+    assert(c->addressPeers_[0].addresses.gateway=="172.24.0.1");
+    assert(c->addressPeers_[1].addresses.gateway=="172.24.1.1");
+    assert(c->addressPeers_[0].ipv6Ready && !c->addressPeers_[1].ipv6Ready);
+    // Per-family failure on slot one leaves the first slot's lease and RA intact.
+    c->addressPeers_[1].dhcpStarted=false;errors["server-start"]=-7;
+    c->ReconcileGatewayPeers(link);
+    assert(c->addressPeers_[0].dhcpStarted && c->addressPeers_[0].ipv6Ready && !c->addressPeers_[1].dhcpStarted);
+    errors.clear();c->ReconcileGatewayPeers(link);assert(c->addressPeers_[1].dhcpStarted);
+    c->addressPeers_[1].dhcpStarted=false;errors["server-start"]=-7;errors["server-stop"]=-8;
+    c->ReconcileGatewayPeers(link);
+    assert(c->addressPeers_[1].dhcpStarted && c->addressPeers_[1].ipv4Error==-7);
+    link.peerLinks[1].generation=99;c->ReconcileGatewayPeers(link);
+    assert(c->addressPeers_[1].generation==11 && c->addressPeers_[0].dhcpStarted);
+    link.peerLinks[1].generation=11;errors.clear();c->ReconcileGatewayPeers(link);
+    assert(c->addressPeers_[1].dhcpStarted && c->addressPeers_[1].ipv4Error==0);
+    // Failed cleanup retains old ownership and blocks reuse of the slot by a new epoch.
+    link.peerLinks[1].generation=12;errors["server-stop"]=-7;
+    c->ReconcileGatewayPeers(link);assert(c->addressPeers_[1].generation==11);
+    errors.clear();c->ReconcileGatewayPeers(link);assert(c->addressPeers_[1].generation==12);
+    NetLinkInfo conflict;INetAddr conflictAddress;conflictAddress.family_=AF_INET;
+    conflictAddress.address_="172.24.1.9";conflictAddress.prefixlen_=24;conflict.netAddrList_.push_back(conflictAddress);
+    assert(c->ConfigureGatewayPeerIpv4(c->addressPeers_[1],&conflict)!=0);
+    assert(!c->addressPeers_[1].dhcpStarted && c->addressPeers_[0].dhcpStarted && c->addressPeers_[0].ipv6Ready);
+    assert(c->ConfigureGatewayPeerIpv4(c->addressPeers_[1],nullptr)==0);
+    errors["ra"]=-1;c->ReconcileGatewayPeers(link);
+    c->addressPeers_[0].ipv6PendingSince-=std::chrono::seconds(11);c->ReconcileGatewayPeers(link);
+    assert(c->addressPeers_[0].ipv6Error!=0 && c->addressPeers_[0].dhcpStarted && c->addressPeers_[1].dhcpStarted);
+    errors.clear();c->ReconcileGatewayPeers(link);assert(c->addressPeers_[0].ipv6Error==0);
+    link.peerLinks[1].releasing=true;errors["server-stop"]=-7;
+    calls.clear();c->ReconcileGatewayPeers(link);
+    assert(c->addressPeers_.count(1)==1 && std::find(calls.begin(),calls.end(),"peer-release:12")==calls.end());
+    errors.clear();calls.clear();c->ReconcileGatewayPeers(link);
+    assert(c->addressPeers_.count(1)==0 && std::find(calls.begin(),calls.end(),"peer-release:12")!=calls.end());
+    link.peerLinks[1].generation=13;link.peerLinks[1].releasing=false;c->ReconcileGatewayPeers(link);
+    assert(c->addressPeers_[1].generation==13 && c->addressPeers_[1].dhcpStarted);
+    // Removing slot zero must preserve slot one, including its DHCP instance.
+    link.peerLinks.erase(link.peerLinks.begin());link.sequence=3;
     OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
     c->OnNearlinkStatus(link);q.Drain();
-    assert(c->dhcpServerStarted_ && !q.delayed.empty());
-    mockIfIndex=0;auto first=q.delayed.front();q.delayed.pop_front();first();q.Drain();
-    assert(c->status_.state!=NearlinkIpShareState::ERROR);
-    c->gatewayIfaceMissingSince_-=std::chrono::seconds(4);
-    auto second=q.delayed.front();q.delayed.pop_front();second();q.Drain();
-    assert(c->status_.state==NearlinkIpShareState::ERROR && c->status_.errorStage=="LINK");
-    mockIfIndex=7;assert(c->StopGateway()==0);q.Drain();
-    assert(c->status_.state==NearlinkIpShareState::IDLE);
-    puts("actual_controller: no-peer gateway capacity and zero-peer projection, dual merge, single supplier, independent failure/recovery, DNS withdrawal, release race and persistent-link timeout PASS");
+    assert(c->addressPeers_.size()==1 && c->addressPeers_[1].dhcpStarted);
+    assert(c->status_.ifaceName=="sleip1" && c->status_.ipv4Address=="172.24.1.1");
+    link.peerLinks.clear();link.sequence=4;
+    OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
+    c->OnNearlinkStatus(link);q.Drain();
+    assert(c->addressPeers_.empty() && c->status_.ipv4Address.empty());
+    assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM);
+    assert(!q.delayed.empty());auto tick=q.delayed.front();q.delayed.pop_front();tick();q.Drain();
+    assert(c->addressPeers_.empty()); // queued maintenance cannot revive a removed peer
+    assert(c->StartGatewayAny(3,2)==0 && c->StartGatewayAny(1,1)!=0);
+    assert(c->StopGateway()==0);q.Drain();assert(c->status_.state==NearlinkIpShareState::IDLE);
+    puts("actual_controller: no-peer gateway capacity and zero-peer projection, dual merge, single supplier, independent failure/recovery, DNS withdrawal, per-peer DHCP/RA, slot-zero release, failure retention and address capacity PASS");
 }
 ''')
     includes = [out, source / 'include', repo / 'interfaces/innerkits/netshareclient/include',
