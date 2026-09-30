@@ -134,6 +134,14 @@ public:
     {
         return nearlinkIpv6Pool_;
     }
+    const std::string &GetNearlinkIpv6RoutedPool() const
+    {
+        return nearlinkIpv6RoutedPool_;
+    }
+    const std::string &GetNearlinkIpv6RoutedUpstream() const
+    {
+        return nearlinkIpv6RoutedUpstream_;
+    }
 
     /**
      * set tethering sys ctl prop
@@ -170,6 +178,8 @@ private:
       CONFIG_VALUE_NEARLINK_DHCP_END,
       CONFIG_VALUE_NEARLINK_IPV4_POOL,
       CONFIG_VALUE_NEARLINK_IPV6_POOL,
+      CONFIG_VALUE_NEARLINK_IPV6_ROUTED_POOL,
+      CONFIG_VALUE_NEARLINK_IPV6_ROUTED_UPSTREAM,
   };
 
   bool isWifiHotspotSetDhcp_ = false;
@@ -193,6 +203,8 @@ private:
   std::string nearlinkDhcpEnd_;
   std::string nearlinkIpv4Pool_{"172.24.0.0/16"};
   std::string nearlinkIpv6Pool_{"fd77:6e6c:6970::/48"};
+  std::string nearlinkIpv6RoutedPool_;
+  std::string nearlinkIpv6RoutedUpstream_;
   std::map<std::string, Config_Value> configMap_;
   static constexpr const char kTcpBeLiberal_[] = "/proc/sys/net/netfilter/nf_conntrack_tcp_be_liberal";
 

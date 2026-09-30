@@ -28,6 +28,24 @@ public:
   bool Prepare(bool gateway, const std::string &layer2, const std::string &iface = "sleip0",
                const std::string &prefix = "");
   bool Advertise(const NetLinkInfo *upstream, bool forwarding, bool dnsReady = true);
+  void SetGatewayPrefix(const std::string &prefix)
+  {
+      configuredPrefix_ = prefix;
+  }
+  static std::string DeriveGatewayPrefix(const NetLinkInfo *upstream, uint32_t slot);
+  bool HasDefaultRouter() const
+  {
+      return lastRouterLifetime_ > 0;
+  }
+  bool OwnsPrefix(const std::string &prefix) const
+  {
+      if (prefix == prefix_)
+          return true;
+      for (const auto &old : retired_)
+          if (old.prefix == prefix)
+              return true;
+      return false;
+  }
   bool Cleanup();
   bool HasPrefix() const
   {

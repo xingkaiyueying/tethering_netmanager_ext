@@ -80,11 +80,19 @@ private:
         NearlinkPeerAddresses addresses;
         bool interfaceAdded{false}, addressAdded{false}, routeAdded{false}, dhcpStarted{false};
         bool ipv6Prepared{false}, ipv6Ready{false};
+        bool forwardAttempted{false}, interfaceForwarding{false}, natEnabled{false}, natAttempted{false},
+            ipv6Routed{false};
+        std::string upstreamIface;
+        int32_t upstreamNetId{-1};
+        bool releasing{false};
+        int32_t upstreamError{0};
         int32_t ipv4Error{0}, ipv6Error{0};
         std::chrono::steady_clock::time_point ipv6PendingSince{};
         NearlinkIpv6Runtime ipv6;
     };
     bool CleanupGatewayPeer(PeerAddressContext &peer);
+    int32_t CleanupGatewayPeerUpstream(PeerAddressContext &peer);
+    void ConfigureGatewayPeerUpstreams(const NetLinkInfo *upstream, int32_t netId);
     int32_t ConfigureGatewayPeerIpv4(PeerAddressContext &peer, const NetLinkInfo *upstream);
     std::map<uint32_t, PeerAddressContext> addressPeers_;
     int32_t ConfigureGatewayIpv4();
@@ -129,6 +137,7 @@ private:
     bool dnsProxyStarted_{false};
     bool dnsUpstreamReady_{false};
     bool forwardingEnabled_{false};
+    bool forwardingAttempted_{false};
     bool interfaceForwarding_{false};
     bool natEnabled_{false};
     bool dhcpClientStarted_{false};

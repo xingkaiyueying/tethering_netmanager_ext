@@ -98,6 +98,18 @@ int main(){
  NearlinkIpv6Runtime runtime;runtime.ifindex_=7;runtime.layer2_="02:11:22:33:44:55";
  assert(!runtime.Advertise(nullptr,false));
  NetLinkInfo up;up.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:20::1234"});
+ assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up,0)=="2001:db8:10:21::");
+ assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up,1)=="2001:db8:10:22::");
+ std::set<std::string> derived;
+ for(unsigned slot=0;slot<32;++slot) assert(derived.insert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up,slot)).second);
+ up.netAddrList_[0].address_="2001:db8:10:ff::1";
+ assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up,0)=="2001:db8:10:100::");
+ up.netAddrList_[0].address_="2001:db8:10:20::1234";
+ NetLinkInfo colliding=up;colliding.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:22::1"});
+ assert(!NearlinkIpv6Runtime::DeriveGatewayPrefix(&colliding,0).empty());
+ assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&colliding,1).empty());
+ assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up,32).empty());
+
  Route def;def.destination_.family_=AF_INET6;up.routeList_.push_back(def);
  {std::ofstream f("if_inet6.txt");}
  assert(!runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==0);
@@ -126,6 +138,7 @@ int main(){
  assert(runtime.daemon_->params.prefixes_.size()==1);
  assert(runtime.daemon_->params.prefixes_[0].preferredLifetime==0);
  assert(runtime.addresses_.size()==2); // old address survives while new DAD is pending
+ assert(runtime.OwnsPrefix("2001:db8:10:21::") && runtime.OwnsPrefix("2001:db8:10:31::"));
  kernelAddress(runtime.gateway_,0x08); // DAD failure must not publish an active prefix.
  assert(!runtime.Advertise(&up,true));assert(runtime.daemon_->params.dnses_.empty());
  kernelAddress(runtime.gateway_,0);

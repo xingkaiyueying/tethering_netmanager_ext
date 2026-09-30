@@ -65,6 +65,17 @@ struct NearlinkPeerAddresses {
         out.prefix = buffer;
         return true;
     }
+    static bool Ipv6Conflicts(const std::string &prefix, const std::string &address, unsigned bits)
+    {
+        uint8_t a[16]{}, b[16]{};
+        if (bits > 128 || inet_pton(AF_INET6, prefix.c_str(), a) != 1 || inet_pton(AF_INET6, address.c_str(), b) != 1)
+            return false;
+        unsigned common = bits < 64 ? bits : 64;
+        for (unsigned i = 0; i < common; ++i)
+            if ((a[i / 8] ^ b[i / 8]) & (0x80 >> (i % 8)))
+                return false;
+        return true;
+    }
     bool Conflicts(const std::string &address, unsigned bits) const
     {
         in_addr a{}, g{};

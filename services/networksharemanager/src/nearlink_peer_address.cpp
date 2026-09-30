@@ -36,6 +36,8 @@ constexpr const char *PEER_SUBNET_MASK = "255.255.255.0";
 } // namespace
 bool NearlinkIpShareController::CleanupGatewayPeer(PeerAddressContext &peer)
 {
+    if (CleanupGatewayPeerUpstream(peer) != 0)
+        return false;
     bool ok = true;
     auto released = [&peer](const char *resource, int32_t ret, bool success) {
         NETMGR_EXT_LOG_I("[NearlinkIpShare][PeerCleanup] slot=%{public}u generation=%{public}llu "
@@ -155,7 +157,8 @@ int32_t NearlinkIpShareController::ConfigureGatewayPeerIpv4(PeerAddressContext &
 
 void NearlinkIpShareController::ConfigureGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link)
 {
-    if (link.generation != linkGeneration_ || link.peerLinks.size() > static_cast<size_t>(maxTerminals_))
+    if (link.generation != linkGeneration_ || link.sequence < linkSequence_ ||
+        link.peerLinks.size() > static_cast<size_t>(maxTerminals_))
         return;
     std::set<uint32_t> live;
     for (const auto &entry : link.peerLinks) {
@@ -170,6 +173,7 @@ void NearlinkIpShareController::ConfigureGatewayPeers(const OHOS::Nearlink::Near
             return !e.releasing && e.slot == it->first && e.generation == it->second.generation;
         });
         if (entry == link.peerLinks.end()) {
+            it->second.releasing = true;
             if (CleanupGatewayPeer(it->second)) {
                 it = addressPeers_.erase(it);
                 continue;
@@ -202,6 +206,7 @@ void NearlinkIpShareController::ConfigureGatewayPeers(const OHOS::Nearlink::Near
             addressPeers_.erase(found);
         }
         auto &peer = addressPeers_[entry.slot];
+        peer.releasing = false;
         if (!peer.generation) {
             peer.generation = entry.generation;
             peer.slot = entry.slot;
@@ -223,8 +228,7 @@ void NearlinkIpShareController::ConfigureGatewayPeers(const OHOS::Nearlink::Near
                 peer.ipv6Prepared = OHOS::Nearlink::NearlinkHost::GetInstance().GetLocalAddress(local) == 0 &&
                                     peer.ipv6.Prepare(true, local, peer.iface, peer.addresses.prefix);
             }
-            // S2 announces only a local logical link; routed upstream ownership is an S3 gate.
-            peer.ipv6Ready = peer.ipv6Prepared && peer.ipv6.Advertise(nullptr, false, dnsProxyStarted_);
+            // RA is reconciled once below, after this peer's upstream ledger is committed.
             auto now = std::chrono::steady_clock::now();
             if (peer.ipv6Ready) {
                 peer.ipv6PendingSince = {};
@@ -238,7 +242,7 @@ void NearlinkIpShareController::ConfigureGatewayPeers(const OHOS::Nearlink::Near
         }
         NETMGR_EXT_LOG_I("[NearlinkIpShare][PeerAddress] slot=%{public}u generation=%{public}llu "
                          "iface=%{public}s ifindex=%{public}u mode=%{public}d dhcp=%{public}d ipv4Code=%{public}d "
-                         "ra=%{public}d ipv6Code=%{public}d ipv6LocalOnly=1",
+                         "ra=%{public}d ipv6Code=%{public}d",
                          peer.slot, static_cast<unsigned long long>(peer.generation), peer.iface.c_str(), peer.ifindex,
                          peer.mode, peer.dhcpStarted, v4, peer.ipv6Ready, peer.ipv6Error);
         if (first) {
@@ -271,7 +275,14 @@ void NearlinkIpShareController::ConfigureGatewayPeers(const OHOS::Nearlink::Near
             status_.ipv6 = {};
         }
     }
-    Publish(link.serviceReady ? NearlinkIpShareState::SERVING_NO_UPSTREAM : NearlinkIpShareState::STARTING);
+    ConfigureGatewayPeerUpstreams(hasUpstream ? &upstream : nullptr, hasUpstream ? network.GetNetId() : -1);
+    bool ready;
+    {
+        std::lock_guard lock(mutex_);
+        ready = status_.hasUpstream;
+    }
+    Publish(link.serviceReady ? (ready ? NearlinkIpShareState::SERVING : NearlinkIpShareState::SERVING_NO_UPSTREAM)
+                              : NearlinkIpShareState::STARTING);
 }
 
 } // namespace OHOS::NetManagerStandard

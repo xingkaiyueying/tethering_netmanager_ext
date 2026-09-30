@@ -860,8 +860,7 @@ void NearlinkIpShareController::OnUpstreamChanged()
     std::lock_guard lock(mutex_);
     auto self = shared_from_this();
     NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, generation = generation_.load()]() {
-        if (self->IsCurrentSession(generation) && self->localInterfaceAdded_ &&
-            (!self->multiGateway_ || self->channelReady_)) {
+        if (self->IsCurrentSession(generation) && (self->multiGateway_ || self->localInterfaceAdded_)) {
             self->ConfigureUpstream();
         }
     });
@@ -1615,6 +1614,11 @@ int32_t NearlinkIpShareController::CleanupUpstream()
 {
     dnsUpstreamReady_ = false;
     int32_t error = NETSYS_SUCCESS;
+    for (auto &[slot, peer] : addressPeers_) {
+        int32_t ret = CleanupGatewayPeerUpstream(peer);
+        if (ret != 0 && error == 0)
+            error = ret;
+    }
     auto release = [&error](bool &owned, int32_t ret) {
         if (ret == NETSYS_SUCCESS) {
             owned = false;
@@ -1630,8 +1634,11 @@ int32_t NearlinkIpShareController::CleanupUpstream()
         release(interfaceForwarding_,
                 NetsysController::GetInstance().IpfwdRemoveInterfaceForward(IFACE_NAME, upstreamIface_));
     }
-    if (forwardingEnabled_) {
-        release(forwardingEnabled_, NetsysController::GetInstance().IpDisableForwarding(FORWARDING_REQUESTER));
+    if ((forwardingEnabled_ || forwardingAttempted_) && error == NETSYS_SUCCESS) {
+        int32_t ret = NetsysController::GetInstance().IpDisableForwarding(FORWARDING_REQUESTER);
+        release(forwardingEnabled_, ret);
+        if (ret == NETSYS_SUCCESS)
+            forwardingAttempted_ = false;
     }
     if (error == NETSYS_SUCCESS) {
         upstreamIface_.clear();

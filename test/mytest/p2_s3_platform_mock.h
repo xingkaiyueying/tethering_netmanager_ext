@@ -43,7 +43,9 @@ public:
     const std::string &GetNearlinkIpv4Addr() { return gateway; }
     const std::string &GetNearlinkDhcpStart() { return start; }
     const std::string &GetNearlinkDhcpEnd() { return end; }
-    std::string pool4="172.24.0.0/16", pool6="fd77:6e6c:6970::/48";
+    std::string pool4="172.24.0.0/16", pool6="fd77:6e6c:6970::/48", routedPool, routedUpstream;
+    const std::string &GetNearlinkIpv6RoutedPool()const{return routedPool;}
+    const std::string &GetNearlinkIpv6RoutedUpstream()const{return routedUpstream;}
     const std::string &GetNearlinkIpv4Pool() { return pool4; }
     const std::string &GetNearlinkIpv6Pool() { return pool6; }
 };
@@ -89,8 +91,9 @@ public:
     int registrations=0;
     static NetConnClient &GetInstance() { static NetConnClient n; return n; }
     int GetNetIdByIdentifier(const char*,std::list<int32_t> &ids) {ids={42}; return 0;}
-    int GetDefaultNet(NetHandle &) { return hasDefault ? 0 : -1; }
-    int GetConnectionProperties(const NetHandle &, NetLinkInfo &l) { l.ifaceName_=iface; return 0; }
+    int netId=10;NetLinkInfo upstreamProperties;
+    int GetDefaultNet(NetHandle &n) { n.id=netId;return hasDefault ? 0 : -1; }
+    int GetConnectionProperties(const NetHandle &, NetLinkInfo &l) { l=upstreamProperties;l.ifaceName_=iface; return 0; }
     int RegisterNetConnCallback(sptr<INetConnCallback>) { return call("monitor-add"); }
     int UnregisterNetConnCallback(sptr<INetConnCallback>) { return call("monitor-del"); }
     int RegisterNetSupplier(int, const char *, const std::set<NetCap> &, uint32_t &id) {
@@ -119,13 +122,25 @@ public:
     int NetworkRemoveRoute(int,const char *,const char *,const char *) { return call("route-del"); }
     int StartDnsProxyListen() { return call("dns-start"); }
     int StopDnsProxyListen() { return call("dns-stop"); }
-    int ShareDnsSet(int) { return call("dns-set"); }
+    int ShareDnsSet(int n) {calls.push_back("dns-set:"+std::to_string(n));return call("dns-set");}
     int IpEnableForwarding(const char *) { return call("forward-add"); }
     int IpDisableForwarding(const char *) { return call("forward-del"); }
-    int IpfwdAddInterfaceForward(const char *,const std::string &) { return call("iface-forward-add"); }
-    int IpfwdRemoveInterfaceForward(const char *,const std::string &) { return call("iface-forward-del"); }
-    int EnableNat(const char *,const std::string &) { return call("nat-add"); }
-    int DisableNat(const char *,const std::string &) { return call("nat-del"); }
+    int IpfwdAddInterfaceForward(const std::string &d,const std::string &u) {
+        calls.push_back("iface-forward-add:"+d+":"+u);
+        int ret=call("iface-forward-add");return errors["iface-forward-add:"+d] ? errors["iface-forward-add:"+d] : ret;
+    }
+    int IpfwdRemoveInterfaceForward(const std::string &d,const std::string &u) {
+        calls.push_back("iface-forward-del:"+d+":"+u);
+        int ret=call("iface-forward-del");return errors["iface-forward-del:"+d] ? errors["iface-forward-del:"+d] : ret;
+    }
+    int EnableNat(const std::string &d,const std::string &u) {
+        calls.push_back("nat-add:"+d+":"+u);
+        int ret=call("nat-add");return errors["nat-add:"+d] ? errors["nat-add:"+d] : ret;
+    }
+    int DisableNat(const std::string &d,const std::string &u) {
+        calls.push_back("nat-del:"+d+":"+u);
+        int ret=call("nat-del");return errors["nat-del:"+d] ? errors["nat-del:"+d] : ret;
+    }
 };
 class NetworkShareTracker {
 public:

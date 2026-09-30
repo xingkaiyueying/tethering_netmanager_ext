@@ -41,7 +41,12 @@ class Parcelable { public: virtual ~Parcelable()=default; virtual bool Marshalli
 namespace OHOS::NetManagerStandard {
 class NearlinkIpv6Runtime { public:
 bool Prepare(bool,const std::string&,const std::string& = "sleip0",const std::string& = ""){return call("ipv6-prepare")==0;}
-bool Advertise(const NetLinkInfo*,bool,bool){return call("ra")==0;}
+std::string prefix;bool routed=false;
+void SetGatewayPrefix(const std::string &p){prefix=p;}
+bool OwnsPrefix(const std::string &p)const{return !p.empty()&&prefix==p;}
+bool HasDefaultRouter()const{return routed;}
+static std::string DeriveGatewayPrefix(const NetLinkInfo *u,uint32_t s){return u ? "2001:db8:10:"+std::to_string(s+1)+"::" : "";}
+bool Advertise(const NetLinkInfo*,bool f,bool){routed=f;return call("ra")==0;}
 bool Cleanup(){return call("ipv6-cleanup")==0;}
 }; }
 ''')
@@ -49,6 +54,7 @@ bool Cleanup(){return call("ipv6-cleanup")==0;}
     put('nearlink_ipshare_controller.h', (source / 'include/nearlink_ipshare_controller.h').read_text())
     put('nearlink_ipshare_controller.cpp', (source / 'src/nearlink_ipshare_controller.cpp').read_text())
     put('nearlink_peer_address.cpp', (source / 'src/nearlink_peer_address.cpp').read_text())
+    put('nearlink_peer_upstream.cpp', (source / 'src/nearlink_peer_upstream.cpp').read_text())
     put('nearlink_family_validation.h', '#pragma once\nnamespace OHOS::NetManagerStandard { struct NearlinkFamilyValidation { int ipv4=0,ipv6=0; }; inline NearlinkFamilyValidation ValidateNearlinkFamilies(int,bool,bool) {return {};} }\n')
     put('dhcp_c_api.h', '''#pragma once
 #include "mock.h"
@@ -76,6 +82,7 @@ inline int StopDhcpServer(const char*) {return call("server-stop");}
 #undef private
 #include "nearlink_ipshare_controller.cpp"
 #include "nearlink_peer_address.cpp"
+#include "nearlink_peer_upstream.cpp"
 using namespace OHOS::NetManagerStandard;
 int main() {
     auto c=NearlinkIpShareController::GetInstance();
@@ -259,6 +266,71 @@ int main() {
         assert(c->addressPeers_.size()==2 && c->gatewayReserved_);
     };
     auto retryStop=[&]() {assert(!q.delayed.empty());auto f=q.delayed.front();q.delayed.pop_front();f();q.Drain();};
+    // P3-S3: two downstream ledgers, immediate upstream events, default loss, and independent retries.
+    activeGateway();net.hasDefault=true;net.iface="wlan0";
+    Route def4;def4.destination_.family_=AF_INET;net.upstreamProperties.routeList_={def4};
+    c->OnUpstreamChanged();q.Drain();
+    assert(c->addressPeers_[0].natEnabled && c->addressPeers_[1].natEnabled);
+    assert(c->addressPeers_[0].interfaceForwarding && c->addressPeers_[1].interfaceForwarding);
+    assert(c->status_.hasUpstream && c->status_.state==NearlinkIpShareState::SERVING);
+    assert(c->addressPeers_[0].ipv6Routed && c->addressPeers_[1].ipv6Routed);
+    assert(!c->status_.ipv4.externalAvailable && !c->status_.ipv6.externalAvailable);
+    calls.clear();c->ConfigureUpstream();
+    assert(std::find(calls.begin(),calls.end(),"nat-add")==calls.end());
+    // DNS failure affects external readiness, preserves local DHCP and forwarding ownership.
+    errors["dns-set"]=-7;c->OnUpstreamChanged();q.Drain();
+    assert(!c->dnsUpstreamReady_ && c->addressPeers_[1].dhcpStarted && c->addressPeers_[1].natEnabled);
+    errors.clear();c->OnUpstreamChanged();q.Drain();assert(c->dnsUpstreamReady_);
+    // Failed old-upstream release blocks only its peer, never grafts its flags onto the new upstream.
+    net.iface="rmnet0";net.netId=11;errors["nat-del:sleip1"]=-7;
+    c->OnUpstreamChanged();q.Drain();
+    assert(c->addressPeers_[0].upstreamIface=="rmnet0" && c->addressPeers_[0].natEnabled);
+    assert(c->addressPeers_[1].upstreamIface=="wlan0" && c->addressPeers_[1].natEnabled);
+    assert(!c->addressPeers_[1].interfaceForwarding && !c->addressPeers_[1].ipv6Routed);
+    errors.clear();c->OnUpstreamChanged();q.Drain();
+    assert(c->addressPeers_[1].upstreamIface=="rmnet0" && c->addressPeers_[1].natEnabled);
+    // Losing only IPv4 default removes NAT but retains independently routed IPv6.
+    net.upstreamProperties.routeList_.clear();c->ConfigureUpstream();
+    assert(!c->addressPeers_[0].natEnabled && c->addressPeers_[0].ipv6Routed);
+    net.upstreamProperties.routeList_={def4};c->ConfigureUpstream();
+    // Whole upstream loss retains both local families and G global listener/forwarding ownership.
+    net.hasDefault=false;c->OnUpstreamChanged();q.Drain();
+    assert(!c->status_.hasUpstream && !c->addressPeers_[0].natEnabled && !c->addressPeers_[1].natEnabled);
+    assert(c->forwardingEnabled_ && c->dnsProxyStarted_ && c->addressPeers_[0].dhcpStarted);
+    assert(c->status_.ipv6.hasError && !c->addressPeers_[0].ipv6Routed);
+    net.hasDefault=true;errors["nat-add:sleip1"]=-7;c->ConfigureUpstream();
+    assert(c->addressPeers_[0].natEnabled && !c->addressPeers_[1].natEnabled && c->addressPeers_[1].natAttempted);
+    errors.clear();c->ConfigureUpstream();assert(c->addressPeers_[1].natEnabled);
+    // Explicit routed pool is bound to its upstream; a mismatch keeps local-only IPv6.
+    c->configuration_.routedPool="2001:db8:100::/48";c->configuration_.routedUpstream="eth0";
+    c->ConfigureUpstream();assert(!c->addressPeers_[0].ipv6Routed && c->status_.ipv6.hasError);
+    c->configuration_.routedUpstream="rmnet0";c->ConfigureUpstream();assert(c->addressPeers_[1].ipv6Routed);
+    c->configuration_.routedPool.clear();c->ConfigureUpstream();
+    // A live/retiring prefix collision must not be advertised on a second peer.
+    c->addressPeers_[1].ipv6.SetGatewayPrefix("2001:db8:10:1::");
+    c->ConfigureUpstream();assert(!c->addressPeers_[0].ipv6Routed);
+    c->ConfigureUpstream();assert(c->addressPeers_[0].ipv6Routed);
+    // NetId replacement on the same interface must also rebuild policy-rule ownership.
+    ++net.netId;calls.clear();c->OnUpstreamChanged();q.Drain();
+    assert(c->addressPeers_[0].upstreamNetId==net.netId);
+    assert(std::find(calls.begin(),calls.end(),"iface-forward-del:sleip0:rmnet0")!=calls.end());
+    // A peer pending release may not reacquire forwarding while its failed delete is retried.
+    link.peerLinks[1].releasing=true;errors["nat-del:sleip1"]=-7;calls.clear();
+    c->ReconcileGatewayPeers(link);assert(c->addressPeers_[1].releasing && c->addressPeers_[0].natEnabled);
+    assert(std::find(calls.begin(),calls.end(),"iface-forward-add:sleip1:rmnet0")==calls.end());
+    errors.clear();c->ReconcileGatewayPeers(link);assert(c->addressPeers_.count(1)==0);
+    link.peerLinks[1].releasing=false;++link.peerLinks[1].generation;c->ReconcileGatewayPeers(link);
+    assert(c->addressPeers_[1].natEnabled && !c->addressPeers_[1].releasing);
+    // Removing slot zero releases exactly its pair; slot one keeps NAT and DNS.
+    link.peerLinks.erase(link.peerLinks.begin());calls.clear();c->ReconcileGatewayPeers(link);
+    assert(c->addressPeers_.size()==1 && c->addressPeers_[1].natEnabled && c->dnsProxyStarted_);
+    assert(std::find(calls.begin(),calls.end(),"nat-del:sleip0:rmnet0")!=calls.end());
+    assert(std::find(calls.begin(),calls.end(),"nat-del:sleip1:rmnet0")==calls.end());
+    link.peerLinks.clear();c->ReconcileGatewayPeers(link);
+    assert(c->addressPeers_.empty() && c->forwardingEnabled_ && c->dnsProxyStarted_);
+    assert(c->StopGateway()==0);q.Drain();assert(!c->forwardingEnabled_ && !c->dnsProxyStarted_);
+    net.hasDefault=false;net.upstreamProperties={};net.netId=10;net.iface="wlan0";
+    puts("P3-S3 controller: per-interface NAT/forward/DNS, zero-peer holders, upstream loss/switch/partial retries, independent families and prefix collision PASS");
     // Reproduce a transient peer cleanup failure with two live peers. One click
     // keeps STOPPING/admission and completes automatically after the failure clears.
     activeGateway();errors["route-del"]=-EBUSY;calls.clear();
