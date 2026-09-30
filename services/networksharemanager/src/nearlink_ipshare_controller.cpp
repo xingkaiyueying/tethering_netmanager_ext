@@ -698,22 +698,30 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
             }
             return;
         }
-        if (status.ifaceName.empty() && localInterfaceAdded_) {
-            // Slot zero left; release its IPv4 resources without stopping the listener.
+        if (status.ifaceName.empty()) {
+            // Slot zero left. Maintenance must not recreate its L3 resources.
+            channelReady_ = false;
             CleanupUpstream();
             if (dhcpServerStarted_ && StopDhcpServer(IFACE_NAME) == DHCP_SUCCESS) dhcpServerStarted_ = false;
-            if (localRouteAdded_ && NetsysController::GetInstance().NetworkRemoveRoute(
-                IP_SHARE_LOCAL_NET_ID, IFACE_NAME, LOCAL_SUBNET, DIRECT_NEXT_HOP) == NETSYS_SUCCESS) {
-                localRouteAdded_ = false;
+            if (localRouteAdded_) {
+                int32_t ret = NetsysController::GetInstance().NetworkRemoveRoute(
+                    IP_SHARE_LOCAL_NET_ID, IFACE_NAME, LOCAL_SUBNET, DIRECT_NEXT_HOP);
+                NETMGR_EXT_LOG_I("[NearlinkIpShare][Cleanup] slot route code=%{public}d", ret);
+                if (ret == NETSYS_SUCCESS || ret == -ESRCH) localRouteAdded_ = false;
             }
-            if (!localRouteAdded_ && NetsysController::GetInstance().NetworkRemoveInterface(
+            if (!localRouteAdded_ && localInterfaceAdded_ && NetsysController::GetInstance().NetworkRemoveInterface(
                 IP_SHARE_LOCAL_NET_ID, IFACE_NAME) == NETSYS_SUCCESS) localInterfaceAdded_ = false;
             if (addressConfigured_) {
                 auto ret = NetsysController::GetInstance().DelInterfaceAddress(
                     IFACE_NAME, configuration_.GetNearlinkIpv4Addr(), PREFIX_LENGTH);
-                if (ret == NETSYS_SUCCESS || ret == -ENODEV || ret == -EADDRNOTAVAIL) addressConfigured_ = false;
+                if (ret == NETSYS_SUCCESS || ret == -ENODEV || ret == -EADDRNOTAVAIL ||
+                    IsGatewayAddressAbsent(&NetsysController::GetInterfaceConfig)) addressConfigured_ = false;
             }
             interfaceIndex_ = 0;
+            std::lock_guard lock(mutex_);
+            status_.ipv4 = NearlinkIpShareFamilyStatus{};
+            status_.ipv4Address.clear();
+            status_.hasUpstream = false;
         }
         Publish(status.serviceReady ? NearlinkIpShareState::SERVING_NO_UPSTREAM :
             NearlinkIpShareState::STARTING);
@@ -829,7 +837,8 @@ void NearlinkIpShareController::OnUpstreamChanged()
     std::lock_guard lock(mutex_);
     auto self = shared_from_this();
     NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, generation = generation_.load()]() {
-        if (self->IsCurrentSession(generation) && self->localInterfaceAdded_) {
+        if (self->IsCurrentSession(generation) && self->localInterfaceAdded_ &&
+            (!self->multiGateway_ || self->channelReady_)) {
             self->ConfigureUpstream();
         }
     });
@@ -837,7 +846,7 @@ void NearlinkIpShareController::OnUpstreamChanged()
 
 void NearlinkIpShareController::ConfigureUpstream()
 {
-    if (!localInterfaceAdded_) {
+    if (!localInterfaceAdded_ || (multiGateway_ && !channelReady_)) {
         return;
     }
     NetHandle upstream;
@@ -1523,7 +1532,8 @@ void NearlinkIpShareController::ScheduleMaintenance(uint64_t generation)
             if (!self->IsCurrentSession(generation)) {
                 return;
             }
-            if (if_nametoindex(IFACE_NAME) != self->interfaceIndex_) {
+            if ((!self->multiGateway_ || self->channelReady_) &&
+                if_nametoindex(IFACE_NAME) != self->interfaceIndex_) {
                 self->Fail("LINK", NETMANAGER_EXT_ERR_OPERATION_FAILED);
                 return;
             }
@@ -1538,8 +1548,11 @@ void NearlinkIpShareController::ScheduleMaintenance(uint64_t generation)
             }
             if (current.role == OHOS::Nearlink::NearlinkIpShareRole::GATEWAY) {
                 self->HandleNearlinkStatus(current);
-                self->ConfigureGateway();
-                self->ConfigureUpstream();
+                if (!self->multiGateway_ ||
+                    (self->channelReady_ && current.ifaceName == IFACE_NAME)) {
+                    self->ConfigureGateway();
+                    self->ConfigureUpstream();
+                }
                 self->ScheduleMaintenance(generation);
                 return;
             }
@@ -1635,10 +1648,13 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
     if (result("IPv6 runtime", ipv6Runtime_.Cleanup() ? 0 : NETMANAGER_EXT_ERR_OPERATION_FAILED)) {
         ipv6Prepared_ = false;
     }
-    if (localRouteAdded_ &&
-        result("local route", NetsysController::GetInstance().NetworkRemoveRoute(IP_SHARE_LOCAL_NET_ID, IFACE_NAME,
-                                                                                 LOCAL_SUBNET, DIRECT_NEXT_HOP))) {
-        localRouteAdded_ = false;
+    if (localRouteAdded_) {
+        int32_t ret = NetsysController::GetInstance().NetworkRemoveRoute(
+            IP_SHARE_LOCAL_NET_ID, IFACE_NAME, LOCAL_SUBNET, DIRECT_NEXT_HOP);
+        // The TUN may have disappeared before its last route is removed.
+        if (result("local route", ret == -ESRCH ? NETSYS_SUCCESS : ret)) {
+            localRouteAdded_ = false;
+        }
     }
     if (!localRouteAdded_ && localInterfaceAdded_ &&
         result("local interface",

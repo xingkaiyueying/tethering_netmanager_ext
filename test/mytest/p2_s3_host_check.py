@@ -179,6 +179,7 @@ int main() {
     errors.clear();c->StopTerminal();q.Drain();assert(c->status_.state==NearlinkIpShareState::IDLE);
     int32_t supported=0;assert(c->GetSupportedMaxTerminals(supported)==0 && supported==2);
     assert(c->StartGatewayAny(1,3)!=0);
+    q.delayed.clear(); // Discard previous terminal sessions' maintenance ticks.
     assert(c->StartGatewayAny(1,1)==0);q.Drain();
     link=OHOS::Nearlink::NearlinkIpShareStatus{};
     link.role=NearlinkIpShareRole::GATEWAY;link.state=NearlinkIpShareState::SERVING_NO_UPSTREAM;
@@ -191,13 +192,24 @@ int main() {
     link.sequence=2;c->OnNearlinkStatus(link);q.Drain();
     assert(c->dhcpServerStarted_ && c->addressConfigured_ && c->localInterfaceAdded_);
     link.state=NearlinkIpShareState::SERVING_NO_UPSTREAM;link.ifaceName.clear();link.sequence=3;
-    c->OnNearlinkStatus(link);q.Drain();
+    OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
+    errors["route-del"]=-3; // Linux ESRCH: route vanished with the released TUN.
+    c->OnNearlinkStatus(link);q.Drain();errors.clear();
     assert(!c->dhcpServerStarted_ && !c->addressConfigured_ && !c->localInterfaceAdded_);
+    assert(!c->localRouteAdded_ && !c->channelReady_ && !c->status_.hasUpstream);
+    assert(c->status_.ipv4Address.empty() && !c->status_.ipv4.configurationAvailable);
+    assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM);
+    // A queued maintenance tick must not revive L3 after the last peer leaves.
+    assert(!q.delayed.empty()); auto tick=q.delayed.front();q.delayed.pop_front();tick();q.Drain();
+    assert(!c->localInterfaceAdded_ && !c->dhcpServerStarted_);
+    assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM);
     link.state=NearlinkIpShareState::CHANNEL_READY;link.ifaceName="sleip0";link.sequence=4;
+    OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
     c->OnNearlinkStatus(link);q.Drain();
     assert(c->dhcpServerStarted_ && c->addressConfigured_ && c->localInterfaceAdded_);
     assert(c->StartGatewayAny(1,1)==0 && c->StartGatewayAny(1,2)!=0);
-    assert(c->StopGateway()==0);q.Drain();
+    c->localRouteAdded_=true; errors["route-del"]=-3; // Retry after kernel already removed route.
+    assert(c->StopGateway()==0);q.Drain();errors.clear();
     assert(c->status_.state==NearlinkIpShareState::IDLE);
     puts("actual_controller: no-peer gateway capacity and zero-peer projection, dual merge, single supplier, independent failure/recovery, DNS withdrawal, evidence, stop fence PASS");
 }
