@@ -687,6 +687,34 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
         return;
     }
     if (multiGateway_ && role == NearlinkIpShareRole::GATEWAY) {
+        if (status.state == OHOS::Nearlink::NearlinkIpShareState::CHANNEL_READY &&
+            status.ifaceName == IFACE_NAME) {
+            interfaceIndex_ = if_nametoindex(IFACE_NAME);
+            ConfigureGateway();
+            ConfigureUpstream();
+            if (!maintenancePending_) {
+                maintenancePending_ = true;
+                ScheduleMaintenance(generation_);
+            }
+            return;
+        }
+        if (status.ifaceName.empty() && localInterfaceAdded_) {
+            // Slot zero left; release its IPv4 resources without stopping the listener.
+            CleanupUpstream();
+            if (dhcpServerStarted_ && StopDhcpServer(IFACE_NAME) == DHCP_SUCCESS) dhcpServerStarted_ = false;
+            if (localRouteAdded_ && NetsysController::GetInstance().NetworkRemoveRoute(
+                IP_SHARE_LOCAL_NET_ID, IFACE_NAME, LOCAL_SUBNET, DIRECT_NEXT_HOP) == NETSYS_SUCCESS) {
+                localRouteAdded_ = false;
+            }
+            if (!localRouteAdded_ && NetsysController::GetInstance().NetworkRemoveInterface(
+                IP_SHARE_LOCAL_NET_ID, IFACE_NAME) == NETSYS_SUCCESS) localInterfaceAdded_ = false;
+            if (addressConfigured_) {
+                auto ret = NetsysController::GetInstance().DelInterfaceAddress(
+                    IFACE_NAME, configuration_.GetNearlinkIpv4Addr(), PREFIX_LENGTH);
+                if (ret == NETSYS_SUCCESS || ret == -ENODEV || ret == -EADDRNOTAVAIL) addressConfigured_ = false;
+            }
+            interfaceIndex_ = 0;
+        }
         Publish(status.serviceReady ? NearlinkIpShareState::SERVING_NO_UPSTREAM :
             NearlinkIpShareState::STARTING);
         return;

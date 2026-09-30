@@ -187,6 +187,15 @@ int main() {
     c->OnNearlinkStatus(link);q.Drain();
     assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM);
     assert(!c->dhcpServerStarted_ && !c->localInterfaceAdded_);
+    link.state=NearlinkIpShareState::CHANNEL_READY;link.ifaceName="sleip0";link.selectedMode=1;
+    link.sequence=2;c->OnNearlinkStatus(link);q.Drain();
+    assert(c->dhcpServerStarted_ && c->addressConfigured_ && c->localInterfaceAdded_);
+    link.state=NearlinkIpShareState::SERVING_NO_UPSTREAM;link.ifaceName.clear();link.sequence=3;
+    c->OnNearlinkStatus(link);q.Drain();
+    assert(!c->dhcpServerStarted_ && !c->addressConfigured_ && !c->localInterfaceAdded_);
+    link.state=NearlinkIpShareState::CHANNEL_READY;link.ifaceName="sleip0";link.sequence=4;
+    c->OnNearlinkStatus(link);q.Drain();
+    assert(c->dhcpServerStarted_ && c->addressConfigured_ && c->localInterfaceAdded_);
     assert(c->StartGatewayAny(1,1)==0 && c->StartGatewayAny(1,2)!=0);
     assert(c->StopGateway()==0);q.Drain();
     assert(c->status_.state==NearlinkIpShareState::IDLE);
