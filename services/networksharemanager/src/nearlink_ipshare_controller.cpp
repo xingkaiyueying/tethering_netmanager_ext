@@ -593,12 +593,42 @@ int32_t NearlinkIpShareController::Stop(NearlinkIpShareRole expectedRole)
     auto self = shared_from_this();
     if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([self]() {
             self->Publish(NearlinkIpShareState::STOPPING);
-            self->Cleanup();
+            self->ContinueStop(0);
         })) {
         stopRequested_ = false;
         return NETMANAGER_EXT_ERR_OPERATION_FAILED;
     }
     return NETMANAGER_EXT_SUCCESS;
+}
+
+void NearlinkIpShareController::ContinueStop(uint32_t attempt)
+{
+    // Multi-peer Stop is asynchronous below IPC. Keep admission and the stop
+    // intent until all retained resources and the lower service have drained.
+    constexpr uint32_t MAX_STOP_RETRIES = 3;
+    bool retry = multiGateway_ && attempt < MAX_STOP_RETRIES;
+    if (Cleanup(true, retry) || !retry) {
+        return;
+    }
+    auto self = shared_from_this();
+    uint64_t generation = generation_.load();
+    if (NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, generation, attempt]() {
+            {
+                std::lock_guard lock(self->mutex_);
+                if (self->generation_ != generation || !self->stopRequested_ || self->shuttingDown_) {
+                    return;
+                }
+            }
+            self->ContinueStop(attempt + 1);
+        }, 1000000)) {
+        NETMGR_EXT_LOG_I("[NearlinkIpShare][Cleanup] stop retry scheduled attempt=%{public}u", attempt + 1);
+        return;
+    }
+    {
+        std::lock_guard lock(mutex_);
+        stopRequested_ = false;
+    }
+    Publish(NearlinkIpShareState::ERROR, "CLEANUP", NETMANAGER_EXT_ERR_OPERATION_FAILED);
 }
 
 int32_t NearlinkIpShareController::GetStatus(NearlinkIpShareStatus &status) const
@@ -1610,7 +1640,7 @@ int32_t NearlinkIpShareController::CleanupUpstream()
     return error;
 }
 
-bool NearlinkIpShareController::Cleanup(bool publishIdle)
+bool NearlinkIpShareController::Cleanup(bool publishIdle, bool deferFailure)
 {
     {
         std::lock_guard lock(mutex_);
@@ -1703,13 +1733,22 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
     if (nearlinkStarted_ && result("NearLink", OHOS::Nearlink::NearlinkIpShareClient::GetInstance().Stop())) {
         nearlinkStarted_ = false;
     }
+    if (multiGateway_ && publishIdle && stopRequested_) {
+        OHOS::Nearlink::NearlinkIpShareStatus current;
+        int32_t ret = OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current);
+        if (ret == 0 && (current.role != OHOS::Nearlink::NearlinkIpShareRole::NONE ||
+                         current.state != OHOS::Nearlink::NearlinkIpShareState::IDLE)) {
+            ret = NETMANAGER_EXT_ERR_OPERATION_FAILED;
+        }
+        result("NearLink drain", ret);
+    }
     {
         std::lock_guard lock(mutex_);
         if (error == 0 && gatewayReserved_) {
             NetworkShareAdmission::GetInstance().ReleaseNearlink();
             gatewayReserved_ = false;
         }
-        stopRequested_ = false;
+        stopRequested_ = error != 0 && deferFailure;
         if (error == 0) { multiGateway_ = false; maxTerminals_ = 0; }
         if (error == 0 && publishIdle) {
             idle.generation = status_.generation;
@@ -1721,6 +1760,10 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
         status_.hasUpstream = false;
     }
     if (error != 0) {
+        if (deferFailure) {
+            NETMGR_EXT_LOG_I("[NearlinkIpShare][Cleanup] stop pending code=%{public}d; ownership retained", error);
+            return false;
+        }
         Publish(NearlinkIpShareState::ERROR, "CLEANUP", error);
         return false;
     }

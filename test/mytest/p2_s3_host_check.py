@@ -248,6 +248,49 @@ int main() {
     assert(c->addressPeers_.empty()); // queued maintenance cannot revive a removed peer
     assert(c->StartGatewayAny(3,2)==0 && c->StartGatewayAny(1,1)!=0);
     assert(c->StopGateway()==0);q.Drain();assert(c->status_.state==NearlinkIpShareState::IDLE);
+    auto activeGateway=[&]() {
+        q.delayed.clear();errors.clear();
+        assert(c->StartGatewayAny(3,2)==0);q.Drain();
+        link.role=NearlinkIpShareRole::GATEWAY;link.state=NearlinkIpShareState::CHANNEL_READY;
+        ++link.generation;link.sequence=1;link.serviceReady=true;
+        link.peerLinks={{0,20+link.generation*2,3,"sleip0"},{1,21+link.generation*2,3,"sleip1"}};
+        OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
+        c->OnNearlinkStatus(link);q.Drain();q.delayed.clear();
+        assert(c->addressPeers_.size()==2 && c->gatewayReserved_);
+    };
+    auto retryStop=[&]() {assert(!q.delayed.empty());auto f=q.delayed.front();q.delayed.pop_front();f();q.Drain();};
+    // Reproduce a transient peer cleanup failure with two live peers. One click
+    // keeps STOPPING/admission and completes automatically after the failure clears.
+    activeGateway();errors["route-del"]=-EBUSY;calls.clear();
+    assert(c->StopGateway()==0);q.Drain();
+    assert(c->status_.state==NearlinkIpShareState::STOPPING && c->stopRequested_);
+    assert(c->addressPeers_.size()==2 && c->gatewayReserved_);
+    assert(c->StopGateway()==0 && q.tasks.empty()); // repeated click is idempotent
+    assert(c->StartGatewayAny(3,2)!=0); // cannot start across an unfinished stop
+    errors.clear();retryStop();
+    assert(c->status_.state==NearlinkIpShareState::IDLE && c->addressPeers_.empty() && !c->gatewayReserved_);
+    assert(std::count(calls.begin(),calls.end(),"nearlink-stop")==1);
+    // A successful Stop IPC is not proof that the lower TUN/channels have drained.
+    activeGateway();auto &lower=OHOS::Nearlink::NearlinkIpShareClient::GetInstance();lower.drainOnStop=false;
+    assert(c->StopGateway()==0);q.Drain();
+    assert(c->status_.state==NearlinkIpShareState::STOPPING && c->gatewayReserved_ && !c->nearlinkStarted_);
+    lower.snapshot.role=NearlinkIpShareRole::NONE;lower.snapshot.state=NearlinkIpShareState::IDLE;
+    retryStop();assert(c->status_.state==NearlinkIpShareState::IDLE && !c->gatewayReserved_);
+    lower.drainOnStop=true;
+    // Persistent resource failure remains ERROR/owned after the bounded retries.
+    activeGateway();errors["ipv6-cleanup"]=-EACCES;
+    assert(c->StopGateway()==0);q.Drain();retryStop();retryStop();retryStop();
+    assert(q.delayed.empty() && c->status_.state==NearlinkIpShareState::ERROR);
+    assert(c->status_.errorStage=="CLEANUP" && c->addressPeers_.size()==2 && c->gatewayReserved_);
+    assert(!c->stopRequested_ && c->StartGatewayAny(3,2)!=0);
+    errors.clear();assert(c->StopGateway()==0);q.Drain();assert(c->status_.state==NearlinkIpShareState::IDLE);
+    // A delayed retry from a previous stop must not touch a new generation.
+    activeGateway();errors["route-del"]=-EBUSY;assert(c->StopGateway()==0);q.Drain();
+    auto staleRetry=q.delayed.front();q.delayed.clear();errors.clear();assert(c->Cleanup());
+    activeGateway();calls.clear();staleRetry();q.Drain();
+    assert(c->addressPeers_.size()==2 && std::find(calls.begin(),calls.end(),"nearlink-stop")==calls.end());
+    assert(c->StopGateway()==0);q.Drain();assert(c->status_.state==NearlinkIpShareState::IDLE);
+    puts("gateway stop: one-click retry, lower drain, idempotence, admission, bounded failure and stale retry PASS");
     puts("actual_controller: no-peer gateway capacity and zero-peer projection, dual merge, single supplier, independent failure/recovery, DNS withdrawal, per-peer DHCP/RA, slot-zero release, failure retention and address capacity PASS");
 }
 ''')

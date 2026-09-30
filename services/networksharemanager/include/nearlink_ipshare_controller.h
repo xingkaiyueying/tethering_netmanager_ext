@@ -67,6 +67,7 @@ private:
     NearlinkIpShareController() = default;
     int32_t Start(NearlinkIpShareRole role, const std::string &peerAddress, int32_t mode, int32_t maxTerminals = 0);
     int32_t Stop(NearlinkIpShareRole expectedRole);
+    void ContinueStop(uint32_t attempt);
     void HandleNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
     void ConfigureGateway();
     void ReconcileGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
@@ -102,7 +103,7 @@ private:
     uint64_t networkRevision_{0};
     bool validationInFlight_{false};
     std::chrono::steady_clock::time_point nextValidation_{};
-    bool Cleanup(bool publishIdle = true);
+    bool Cleanup(bool publishIdle = true, bool deferFailure = false);
     void Fail(const std::string &stage, int32_t code);
     void Publish(NearlinkIpShareState state, const std::string &errorStage = {}, int32_t errorCode = 0);
     static bool ParsePeerAddress(const std::string &address, std::array<uint8_t, 6> &bytes);

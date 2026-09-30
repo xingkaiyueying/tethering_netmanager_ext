@@ -188,7 +188,12 @@ public:
     int UnregisterObserver() { return 0; }
     int StartGateway(const std::string &) { return call("nearlink-start"); }
     int StartTerminal(const std::string &) { return call("nearlink-start"); }
-    int Stop() { return call("nearlink-stop"); }
+    bool drainOnStop=true;
+    int Stop() {
+        int ret=call("nearlink-stop");
+        if (!ret && drainOnStop) { snapshot.role=NearlinkIpShareRole::NONE; snapshot.state=NearlinkIpShareState::IDLE; }
+        return ret;
+    }
     int IsPeerSupported(const std::string &,bool &b) { b=true; return 0; }
 };
 class NearlinkHost {

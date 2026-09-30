@@ -37,13 +37,22 @@ constexpr const char *PEER_SUBNET_MASK = "255.255.255.0";
 bool NearlinkIpShareController::CleanupGatewayPeer(PeerAddressContext &peer)
 {
     bool ok = true;
+    auto released = [&peer](const char *resource, int32_t ret, bool success) {
+        NETMGR_EXT_LOG_I("[NearlinkIpShare][PeerCleanup] slot=%{public}u generation=%{public}llu "
+                         "iface=%{public}s ifindex=%{public}u resource=%{public}s code=%{public}d released=%{public}d",
+                         peer.slot, static_cast<unsigned long long>(peer.generation), peer.iface.c_str(),
+                         peer.ifindex, resource, ret, success);
+        return success;
+    };
     if (peer.dhcpStarted) {
-        if (StopDhcpServer(peer.iface.c_str()) == DHCP_SUCCESS)
+        int32_t ret = StopDhcpServer(peer.iface.c_str());
+        if (released("DHCP", ret, ret == DHCP_SUCCESS))
             peer.dhcpStarted = false;
         else
             ok = false;
     }
-    if (peer.ipv6.Cleanup())
+    bool ipv6Released = peer.ipv6.Cleanup();
+    if (released("IPv6", ipv6Released ? 0 : NETMANAGER_EXT_ERR_OPERATION_FAILED, ipv6Released))
         peer.ipv6Prepared = peer.ipv6Ready = false;
     else
         ok = false;
@@ -56,20 +65,22 @@ bool NearlinkIpShareController::CleanupGatewayPeer(PeerAddressContext &peer)
     if (peer.routeAdded) {
         int32_t ret = netsys.NetworkRemoveRoute(PEER_IP_SHARE_LOCAL_NET_ID, peer.iface.c_str(),
                                                 peer.addresses.subnet.c_str(), PEER_DIRECT_NEXT_HOP);
-        if (missing(ret))
+        if (released("IPv4 route", ret, missing(ret)))
             peer.routeAdded = false;
         else
             ok = false;
     }
     if (!peer.routeAdded && peer.interfaceAdded) {
-        if (missing(netsys.NetworkRemoveInterface(PEER_IP_SHARE_LOCAL_NET_ID, peer.iface.c_str())))
+        int32_t ret = netsys.NetworkRemoveInterface(PEER_IP_SHARE_LOCAL_NET_ID, peer.iface.c_str());
+        if (released("local interface", ret, missing(ret)))
             peer.interfaceAdded = false;
         else
             ok = false;
     }
     if (peer.addressAdded) {
-        if (!sameInterface ||
-            missing(netsys.DelInterfaceAddress(peer.iface.c_str(), peer.addresses.gateway, PEER_PREFIX_LENGTH)))
+        int32_t ret = sameInterface ?
+            netsys.DelInterfaceAddress(peer.iface.c_str(), peer.addresses.gateway, PEER_PREFIX_LENGTH) : -ENODEV;
+        if (released("IPv4 address", ret, missing(ret)))
             peer.addressAdded = false;
         else
             ok = false;
