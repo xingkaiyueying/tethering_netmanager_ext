@@ -690,6 +690,7 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
         if (status.state == OHOS::Nearlink::NearlinkIpShareState::CHANNEL_READY &&
             status.ifaceName == IFACE_NAME) {
             interfaceIndex_ = if_nametoindex(IFACE_NAME);
+            gatewayIfaceMissingSince_ = {};
             ConfigureGateway();
             ConfigureUpstream();
             if (!maintenancePending_) {
@@ -701,6 +702,7 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
         if (status.ifaceName.empty()) {
             // Slot zero left. Maintenance must not recreate its L3 resources.
             channelReady_ = false;
+            gatewayIfaceMissingSince_ = {};
             CleanupUpstream();
             if (dhcpServerStarted_ && StopDhcpServer(IFACE_NAME) == DHCP_SUCCESS) dhcpServerStarted_ = false;
             if (localRouteAdded_) {
@@ -1532,11 +1534,6 @@ void NearlinkIpShareController::ScheduleMaintenance(uint64_t generation)
             if (!self->IsCurrentSession(generation)) {
                 return;
             }
-            if ((!self->multiGateway_ || self->channelReady_) &&
-                if_nametoindex(IFACE_NAME) != self->interfaceIndex_) {
-                self->Fail("LINK", NETMANAGER_EXT_ERR_OPERATION_FAILED);
-                return;
-            }
             OHOS::Nearlink::NearlinkIpShareStatus current;
             if (OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current) != 0 ||
                 (current.generation != self->linkGeneration_ &&
@@ -1547,13 +1544,38 @@ void NearlinkIpShareController::ScheduleMaintenance(uint64_t generation)
                 return;
             }
             if (current.role == OHOS::Nearlink::NearlinkIpShareRole::GATEWAY) {
-                self->HandleNearlinkStatus(current);
-                if (!self->multiGateway_ ||
-                    (self->channelReady_ && current.ifaceName == IFACE_NAME)) {
-                    self->ConfigureGateway();
-                    self->ConfigureUpstream();
+                // The TUN can vanish before NearLink publishes the peer-release event.
+                // Wait for that event without reconfiguring the vanished interface.
+                if (self->multiGateway_ && current.ifaceName == IFACE_NAME &&
+                    if_nametoindex(IFACE_NAME) == 0) {
+                    auto now = std::chrono::steady_clock::now();
+                    if (self->gatewayIfaceMissingSince_ == std::chrono::steady_clock::time_point{}) {
+                        self->gatewayIfaceMissingSince_ = now;
+                    } else if (now - self->gatewayIfaceMissingSince_ >= std::chrono::seconds(3)) {
+                        self->Fail("LINK", NETMANAGER_EXT_ERR_OPERATION_FAILED);
+                        return;
+                    }
+                    self->ScheduleMaintenance(generation);
+                    return;
                 }
+                self->HandleNearlinkStatus(current);
+                if (self->multiGateway_ && (!self->channelReady_ || current.ifaceName.empty())) {
+                    self->gatewayIfaceMissingSince_ = {};
+                    self->ScheduleMaintenance(generation);
+                    return;
+                }
+                if (if_nametoindex(IFACE_NAME) != self->interfaceIndex_) {
+                    self->Fail("LINK", NETMANAGER_EXT_ERR_OPERATION_FAILED);
+                    return;
+                }
+                self->gatewayIfaceMissingSince_ = {};
+                self->ConfigureGateway();
+                self->ConfigureUpstream();
                 self->ScheduleMaintenance(generation);
+                return;
+            }
+            if (if_nametoindex(IFACE_NAME) != self->interfaceIndex_) {
+                self->Fail("LINK", NETMANAGER_EXT_ERR_OPERATION_FAILED);
                 return;
             }
             if (self->families_.ExpireLease(std::chrono::steady_clock::now())) {
@@ -1634,6 +1656,7 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle)
     ipv6Addresses_ = DhcpL3Ipv6Snapshot{};
     ipv6GatewayPendingSince_ = {};
     maintenancePending_ = false;
+    gatewayIfaceMissingSince_ = {};
     ++networkRevision_;
     validationInFlight_ = false;
     if (dnsProxyStarted_ && result("DNS proxy", NetsysController::GetInstance().StopDnsProxyListen())) {

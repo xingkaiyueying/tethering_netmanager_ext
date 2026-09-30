@@ -141,6 +141,7 @@ private:
     std::array<uint8_t, 6> clientKey_{};
     void RetryTerminalDhcp();
     bool maintenancePending_{false};
+    std::chrono::steady_clock::time_point gatewayIfaceMissingSince_{};
 };
 } // namespace OHOS::NetManagerStandard
 #endif // NETMANAGER_EXT_NEARLINK_IPSHARE_CONTROLLER_H

@@ -35,7 +35,7 @@ class Parcelable { public: virtual ~Parcelable()=default; virtual bool Marshalli
     # Socket parsing uses WinSock, not a home-made IPv6 parser.
     put('netinet/ip.h', '#pragma once\n#include <winsock2.h>\n#include <ws2tcpip.h>\n#undef ERROR\nextern "C" int inet_pton(int,const char*,void*);\nextern "C" const char* inet_ntop(int,const void*,char*,size_t);\n')
     put('arpa/inet.h', '#include <netinet/ip.h>\n')
-    put('net/if.h', '#pragma once\ninline unsigned if_nametoindex(const char*) { return 7; }\n')
+    put('net/if.h', '#pragma once\ninline unsigned mockIfIndex=7;\ninline unsigned if_nametoindex(const char*) { return mockIfIndex; }\n')
     put('nearlink_ipv6_runtime.h', '''#pragma once
 #include "mock.h"
 namespace OHOS::NetManagerStandard {
@@ -189,20 +189,28 @@ int main() {
     assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM);
     assert(!c->dhcpServerStarted_ && !c->localInterfaceAdded_);
     link.state=NearlinkIpShareState::CHANNEL_READY;link.ifaceName="sleip0";link.selectedMode=1;
-    link.sequence=2;c->OnNearlinkStatus(link);q.Drain();
+    link.sequence=2;OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
+    c->OnNearlinkStatus(link);q.Drain();
     assert(c->dhcpServerStarted_ && c->addressConfigured_ && c->localInterfaceAdded_);
+    // The TUN disappears before NearLink's peer-release notification arrives.
+    mockIfIndex=0;
+    assert(!q.delayed.empty());auto early=q.delayed.front();q.delayed.pop_front();early();q.Drain();
+    assert(c->status_.state!=NearlinkIpShareState::ERROR && c->dhcpServerStarted_);
+    assert(c->gatewayIfaceMissingSince_ != std::chrono::steady_clock::time_point{});
     link.state=NearlinkIpShareState::SERVING_NO_UPSTREAM;link.ifaceName.clear();link.sequence=3;
     OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
     errors["route-del"]=-3; // Linux ESRCH: route vanished with the released TUN.
     c->OnNearlinkStatus(link);q.Drain();errors.clear();
     assert(!c->dhcpServerStarted_ && !c->addressConfigured_ && !c->localInterfaceAdded_);
     assert(!c->localRouteAdded_ && !c->channelReady_ && !c->status_.hasUpstream);
+    assert(c->gatewayIfaceMissingSince_ == std::chrono::steady_clock::time_point{});
     assert(c->status_.ipv4Address.empty() && !c->status_.ipv4.configurationAvailable);
     assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM);
     // A queued maintenance tick must not revive L3 after the last peer leaves.
     assert(!q.delayed.empty()); auto tick=q.delayed.front();q.delayed.pop_front();tick();q.Drain();
     assert(!c->localInterfaceAdded_ && !c->dhcpServerStarted_);
     assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM);
+    mockIfIndex=7;
     link.state=NearlinkIpShareState::CHANNEL_READY;link.ifaceName="sleip0";link.sequence=4;
     OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
     c->OnNearlinkStatus(link);q.Drain();
@@ -211,7 +219,20 @@ int main() {
     c->localRouteAdded_=true; errors["route-del"]=-3; // Retry after kernel already removed route.
     assert(c->StopGateway()==0);q.Drain();errors.clear();
     assert(c->status_.state==NearlinkIpShareState::IDLE);
-    puts("actual_controller: no-peer gateway capacity and zero-peer projection, dual merge, single supplier, independent failure/recovery, DNS withdrawal, evidence, stop fence PASS");
+    // A persistently missing active TUN still fails after the release grace window.
+    q.delayed.clear();assert(c->StartGatewayAny(1,1)==0);q.Drain();
+    link.generation=5;link.sequence=1;link.state=NearlinkIpShareState::CHANNEL_READY;
+    OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
+    c->OnNearlinkStatus(link);q.Drain();
+    assert(c->dhcpServerStarted_ && !q.delayed.empty());
+    mockIfIndex=0;auto first=q.delayed.front();q.delayed.pop_front();first();q.Drain();
+    assert(c->status_.state!=NearlinkIpShareState::ERROR);
+    c->gatewayIfaceMissingSince_-=std::chrono::seconds(4);
+    auto second=q.delayed.front();q.delayed.pop_front();second();q.Drain();
+    assert(c->status_.state==NearlinkIpShareState::ERROR && c->status_.errorStage=="LINK");
+    mockIfIndex=7;assert(c->StopGateway()==0);q.Drain();
+    assert(c->status_.state==NearlinkIpShareState::IDLE);
+    puts("actual_controller: no-peer gateway capacity and zero-peer projection, dual merge, single supplier, independent failure/recovery, DNS withdrawal, release race and persistent-link timeout PASS");
 }
 ''')
     includes = [out, source / 'include', repo / 'interfaces/innerkits/netshareclient/include',
