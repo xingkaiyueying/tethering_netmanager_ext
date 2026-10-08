@@ -166,8 +166,10 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
         status_.hasUpstream = present && forwardingEnabled_ && (addressPeers_.empty() || anyForward);
         // Gateway rules are configuration evidence. End-to-end validation remains terminal-side.
         status_.ipv4.externalAvailable = status_.ipv6.externalAvailable = false;
-        if (!addressPeers_.empty()) {
-            const auto &peer = addressPeers_.begin()->second;
+        auto projected = std::find_if(addressPeers_.begin(), addressPeers_.end(),
+                                      [](const auto &item) { return !item.second.releasing; });
+        if (projected != addressPeers_.end()) {
+            const auto &peer = projected->second;
             bool v4Ready = peer.ipv4Error == 0 && peer.interfaceForwarding && peer.natEnabled && hasV4;
             status_.ipv4.hasError = peer.ipv4Error != 0 || (present && (!v4Ready || dnsRet != 0));
             status_.ipv4.error = {};
@@ -185,7 +187,9 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
             status_.ipv6.configurationAvailable = peer.ipv6Ready;
             status_.ipv6.phase = peer.mode == 3 ? (peer.ipv6Ready ? 2 : (peer.ipv6Error ? 3 : 1)) : 0;
             // No routed default: explicit local-only/limited IPv6, without destroying IPv4.
-            status_.ipv6.hasError = peer.mode == 3 && !peer.ipv6Routed;
+            bool pending = !peer.ipv6Ready && peer.ipv6Error == 0 && peer.ipv6Prepared &&
+                peer.interfaceForwarding && peer.natEnabled && dnsUpstreamReady_;
+            status_.ipv6.hasError = peer.mode == 3 && !peer.ipv6Routed && !pending;
             status_.ipv6.error = {};
             if (status_.ipv6.hasError) {
                 status_.ipv6.error.plane = 4;

@@ -64,6 +64,17 @@ bool Cleanup(){return call("ipv6-cleanup")==0;}
         upstream_source = subprocess.check_output(['git', '-c', f'safe.directory={repo.as_posix()}',
             '-C', str(repo), 'show', before_ref + ':services/networksharemanager/src/nearlink_peer_upstream.cpp']).decode()
     put('nearlink_peer_upstream.cpp', upstream_source)
+    restart_before = os.environ.get('P3_RESTART_BEFORE_REF')
+    if restart_before:
+        for name in ('nearlink_ipshare_controller.cpp', 'nearlink_peer_upstream.cpp'):
+            payload = subprocess.check_output(['git', '-c', f'safe.directory={repo.as_posix()}',
+                '-C', str(repo), 'show', restart_before + ':services/networksharemanager/src/' + name])
+            (out / name).write_bytes(payload)
+    prefix_before = os.environ.get('P3_RESTART_PREFIX_BEFORE_REF')
+    if prefix_before:
+        payload = subprocess.check_output(['git', '-c', f'safe.directory={repo.as_posix()}',
+            '-C', str(repo), 'show', prefix_before + ':services/networksharemanager/src/nearlink_peer_upstream.cpp'])
+        (out / 'nearlink_peer_upstream.cpp').write_bytes(payload)
     put('nearlink_family_validation.h', '#pragma once\nnamespace OHOS::NetManagerStandard { struct NearlinkFamilyValidation { int ipv4=0,ipv6=0; }; inline NearlinkFamilyValidation ValidateNearlinkFamilies(int,bool,bool) {return {};} }\n')
     put('dhcp_c_api.h', '''#pragma once
 #include "mock.h"
@@ -192,7 +203,8 @@ int main() {
     c->OnDhcpSuccess(0,"sleip0",v4,oldSession);q.Drain();assert(c->netSupplierId_==0);
     c->OnDhcpSuccess(0,"sleip0",v4,c->generation_);q.Drain();
     assert(c->status_.ipv4.configurationAvailable && c->nearlinkStarted_);
-    errors.clear();errors["ipv6-cleanup"]=-1;c->StopTerminal();q.Drain();
+    q.delayed.clear();errors.clear();errors["ipv6-cleanup"]=-1;c->StopTerminal();q.Drain();
+    for(int n=0;n<3;++n) {assert(!q.delayed.empty());auto retry=q.delayed.front();q.delayed.pop_front();retry();q.Drain();}
     assert(c->status_.state==NearlinkIpShareState::ERROR && c->status_.errorStage=="CLEANUP");
     errors.clear();c->StopTerminal();q.Drain();assert(c->status_.state==NearlinkIpShareState::IDLE);
     int32_t supported=0;assert(c->GetSupportedMaxTerminals(supported)==0 && supported==2);
@@ -395,6 +407,51 @@ int main() {
     assert(c->addressPeers_.size()==2 && std::find(calls.begin(),calls.end(),"nearlink-stop")==calls.end());
     assert(c->StopGateway()==0);q.Drain();assert(c->status_.state==NearlinkIpShareState::IDLE);
     puts("gateway stop: one-click retry, lower drain, idempotence, admission, bounded failure and stale retry PASS");
+    // Terminal STOP must wait for lower IDLE too; cancelling a queued START
+    // must never create a fresh lower session after the user's stop intent.
+    calls.clear(); assert(c->StartTerminal(peer,3)==0); assert(c->StopTerminal()==0);q.Drain();
+    assert(std::find(calls.begin(),calls.end(),"nearlink-start")==calls.end());
+    assert(c->status_.state==NearlinkIpShareState::IDLE);
+    assert(c->StartTerminal(peer,3)==0);q.Drain();
+    lower.snapshot.role=NearlinkIpShareRole::TERMINAL;
+    lower.snapshot.state=NearlinkIpShareState::CHANNEL_READY; lower.drainOnStop=false;
+    assert(c->StopTerminal()==0);q.Drain();
+    assert(c->status_.state==NearlinkIpShareState::STOPPING && c->stopRequested_);
+    lower.snapshot.role=NearlinkIpShareRole::NONE;lower.snapshot.state=NearlinkIpShareState::IDLE;
+    retryStop();assert(c->status_.state==NearlinkIpShareState::IDLE);lower.drainOnStop=true;
+    // Remote release busy causes a bounded restart in the originally requested
+    // mode. Late callbacks and Stop cancel the delayed work by generation.
+    auto startupBusy=[&](uint64_t gen) {
+        OHOS::Nearlink::NearlinkIpShareStatus busy;
+        busy.role=NearlinkIpShareRole::TERMINAL;busy.peerAddress=peer;busy.ifaceName="sleip0";
+        busy.state=NearlinkIpShareState::ERROR;busy.generation=gen;busy.sequence=1;
+        busy.selectedMode=3;busy.errorStage="iposl-config";busy.errorCode=-6;
+        lower.snapshot=busy;c->HandleNearlinkStatus(busy);
+    };
+    assert(c->StartTerminal(peer,3)==0);q.Drain();startupBusy(100);
+    assert(c->status_.state==NearlinkIpShareState::CONFIGURING && c->terminalRestartPending_);
+    calls.clear();retryStop();assert(std::count(calls.begin(),calls.end(),"nearlink-start")==1);
+    assert(c->nearlinkStarted_ && c->status_.requestedMode==3 && !c->terminalRestartPending_);
+    startupBusy(101);auto staleStart=q.delayed.back();q.delayed.clear();
+    assert(c->StopTerminal()==0);q.Drain();calls.clear();staleStart();q.Drain();
+    assert(std::find(calls.begin(),calls.end(),"nearlink-start")==calls.end());
+    assert(c->status_.state==NearlinkIpShareState::IDLE);
+    assert(c->StartTerminal(peer,3)==0);q.Drain();
+    for(uint64_t gen=200;gen<203;++gen) {startupBusy(gen);retryStop();}
+    startupBusy(203);assert(c->status_.state==NearlinkIpShareState::ERROR && q.delayed.empty());
+    assert(c->StopTerminal()==0);q.Drain();
+    // DAD/RA admission stays CONFIGURING for ten seconds, then errors. A
+    // retiring first slot must not replace the remaining live peer's summary.
+    net.hasDefault=true;net.upstreamProperties.routeList_={def4};activeGateway();
+    errors["ra"]=-1;c->ConfigureUpstream();
+    assert(c->status_.ipv6.phase==1 && !c->status_.ipv6.hasError);
+    c->addressPeers_[0].ipv6PendingSince=std::chrono::steady_clock::now()-std::chrono::seconds(11);
+    c->ConfigureUpstream();assert(c->status_.ipv6.hasError && c->status_.ipv6.error.stage=="PREFIX");
+    errors.clear();c->ConfigureUpstream();assert(!c->status_.ipv6.hasError);
+    c->addressPeers_[0].releasing=true;c->addressPeers_[0].ipv6Error=-7;
+    c->ConfigureUpstream();assert(!c->status_.ipv6.hasError && c->addressPeers_[1].ipv6Routed);
+    assert(c->StopGateway()==0);q.Drain();net.hasDefault=false;
+    puts("rapid terminal restart: lower drain, queued start cancellation, peer busy retry, mode retention, bounded failure, stop cancellation and IPv6 projection PASS");
     c->status_.netId=106;
     c->status_.ipv4.configurationAvailable=c->status_.ipv6.configurationAvailable=true;
     c->status_.ipv4.externalAvailable=c->status_.ipv6.externalAvailable=true;

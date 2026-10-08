@@ -523,6 +523,8 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
         networkDirty_ = false;
         ipv6Addresses_ = DhcpL3Ipv6Snapshot{};
         stopRequested_ = false;
+        terminalStartRetries_ = 0;
+        terminalRestartPending_ = false;
         status_.state = NearlinkIpShareState::STARTING;
         status_.role = role;
         status_.peerAddress = peerAddress;
@@ -533,7 +535,9 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
         status_.errorCode = 0;
     }
     auto self = shared_from_this();
-    if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, role, peerAddress, mode, maxTerminals]() {
+    if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, role, peerAddress, mode, maxTerminals,
+                                                             generation = generation_.load()]() {
+            if (!self->IsCurrentSession(generation)) return;
             self->Publish(NearlinkIpShareState::STARTING);
             int32_t ret = maxTerminals != 0
                               ? OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartGatewayAny(mode, maxTerminals)
@@ -603,10 +607,10 @@ int32_t NearlinkIpShareController::Stop(NearlinkIpShareRole expectedRole)
 
 void NearlinkIpShareController::ContinueStop(uint32_t attempt)
 {
-    // Multi-peer Stop is asynchronous below IPC. Keep admission and the stop
+    // Stop is asynchronous below IPC. Keep admission and the stop
     // intent until all retained resources and the lower service have drained.
     constexpr uint32_t MAX_STOP_RETRIES = 3;
-    bool retry = multiGateway_ && attempt < MAX_STOP_RETRIES;
+    bool retry = attempt < MAX_STOP_RETRIES;
     if (Cleanup(true, retry) || !retry) {
         return;
     }
@@ -672,6 +676,7 @@ void NearlinkIpShareController::OnNearlinkStatus(const OHOS::Nearlink::NearlinkI
 
 void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status)
 {
+    if (terminalRestartPending_) return;
     NearlinkIpShareRole role;
     {
         std::lock_guard lock(mutex_);
@@ -729,6 +734,21 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
                      static_cast<int32_t>(role), static_cast<int32_t>(status.state),
                      MaskPeer(status.peerAddress).c_str(), status.ifaceName.c_str());
     if (status.state == OHOS::Nearlink::NearlinkIpShareState::ERROR) {
+        // A reconnect can reach G before its old peer's L3 cleanup completes.
+        // Retry only startup lifecycle failures, with no DHCP/network ownership.
+        if (role == NearlinkIpShareRole::TERMINAL && !dhcpClientStarted_ && terminalStartRetries_ < 3 &&
+            ((status.errorStage == "iposl-config" && status.errorCode == -6) || status.errorStage == "channel")) {
+            ++terminalStartRetries_;
+            NETMGR_EXT_LOG_I("[NearlinkIpShare][Restart] attempt=%{public}u stage=%{public}s code=%{public}d",
+                             terminalStartRetries_, status.errorStage.c_str(), status.errorCode);
+            if (!Cleanup(false)) return;
+            linkGeneration_ = linkSequence_ = evidenceSequence_ = 0;
+            dualStack_ = channelReady_ = false;
+            terminalRestartPending_ = true;
+            Publish(NearlinkIpShareState::CONFIGURING);
+            RetryTerminalStart();
+            return;
+        }
         Fail(status.errorStage.empty() ? "LINK" : status.errorStage, status.errorCode);
         return;
     }
@@ -759,6 +779,43 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
     if (!addressConfigured_ && !dhcpClientStarted_ && state >= NearlinkIpShareState::STARTING &&
         state <= NearlinkIpShareState::CHANNEL_READY) {
         Publish(state);
+    }
+}
+
+void NearlinkIpShareController::RetryTerminalStart(uint32_t drainAttempt)
+{
+    auto self = shared_from_this();
+    const uint64_t generation = generation_.load();
+    if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, generation, drainAttempt]() {
+            if (!self->IsCurrentSession(generation) || !self->terminalRestartPending_) return;
+            OHOS::Nearlink::NearlinkIpShareStatus current;
+            int32_t ret = OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current);
+            if (ret != 0 || current.role != OHOS::Nearlink::NearlinkIpShareRole::NONE ||
+                current.state != OHOS::Nearlink::NearlinkIpShareState::IDLE) {
+                if (drainAttempt < 3) {
+                    NETMGR_EXT_LOG_I("[NearlinkIpShare][Restart] lower drain pending attempt=%{public}u",
+                                     drainAttempt + 1);
+                    self->RetryTerminalStart(drainAttempt + 1);
+                    return;
+                }
+                self->terminalRestartPending_ = false;
+                self->Fail("CLEANUP", NETMANAGER_EXT_ERR_OPERATION_FAILED);
+                return;
+            }
+            self->terminalRestartPending_ = false;
+            std::string peer;
+            int32_t mode;
+            {
+                std::lock_guard lock(self->mutex_);
+                peer = self->status_.peerAddress;
+                mode = self->status_.requestedMode;
+            }
+            ret = OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartNearlinkTerminalWithMode(peer, mode);
+            if (ret != 0) self->Fail("LINK", ret);
+            else self->nearlinkStarted_ = true;
+        }, 1000000)) {
+        self->terminalRestartPending_ = false;
+        Fail("LINK", NETMANAGER_EXT_ERR_OPERATION_FAILED);
     }
 }
 
@@ -1743,7 +1800,7 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle, bool deferFailure)
     if (nearlinkStarted_ && result("NearLink", OHOS::Nearlink::NearlinkIpShareClient::GetInstance().Stop())) {
         nearlinkStarted_ = false;
     }
-    if (multiGateway_ && publishIdle && stopRequested_) {
+    if (publishIdle && stopRequested_) {
         OHOS::Nearlink::NearlinkIpShareStatus current;
         int32_t ret = OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current);
         if (ret == 0 && (current.role != OHOS::Nearlink::NearlinkIpShareRole::NONE ||

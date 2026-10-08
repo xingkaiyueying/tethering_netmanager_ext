@@ -68,6 +68,7 @@ private:
     int32_t Start(NearlinkIpShareRole role, const std::string &peerAddress, int32_t mode, int32_t maxTerminals = 0);
     int32_t Stop(NearlinkIpShareRole expectedRole);
     void ContinueStop(uint32_t attempt);
+    void RetryTerminalStart(uint32_t drainAttempt = 0);
     void HandleNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
     void ConfigureGateway();
     void ReconcileGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
@@ -130,6 +131,8 @@ private:
     bool multiGateway_{false};
     int32_t maxTerminals_{0};
     bool nearlinkStarted_{false};
+    uint32_t terminalStartRetries_{0};
+    bool terminalRestartPending_{false};
     bool localInterfaceAdded_{false};
     bool localRouteAdded_{false};
     bool addressConfigured_{false};
