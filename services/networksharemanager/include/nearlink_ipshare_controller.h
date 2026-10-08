@@ -96,6 +96,8 @@ private:
     void ConfigureGatewayPeerUpstreams(const NetLinkInfo *upstream, int32_t netId);
     int32_t ConfigureGatewayPeerIpv4(PeerAddressContext &peer, const NetLinkInfo *upstream);
     std::map<uint32_t, PeerAddressContext> addressPeers_;
+    std::vector<NearlinkIpSharePeerStatus> gatewayPeerLinks_;
+    void RefreshGatewayStatusLocked();
     int32_t ConfigureGatewayIpv4();
     void StartTerminalDhcp();
     void ConfigureUpstream();

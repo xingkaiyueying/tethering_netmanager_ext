@@ -159,7 +159,7 @@ public:
 namespace OHOS::Nearlink {
 using NearlinkIpShareRole = OHOS::NetManagerStandard::NearlinkIpShareRole;
 using NearlinkIpShareState = OHOS::NetManagerStandard::NearlinkIpShareState;
-struct NearlinkIpSharePeerLink {uint32_t slot=0;uint64_t generation=0;int32_t selectedMode=0;std::string ifaceName;bool releasing=false;};
+struct NearlinkIpSharePeerLink {uint32_t slot=0;uint64_t generation=0;int32_t selectedMode=0;std::string ifaceName;bool releasing=false;bool active=true;};
 class NearlinkIpShareStatus { public:
     NearlinkIpShareRole role{NearlinkIpShareRole::NONE};
     NearlinkIpShareState state{NearlinkIpShareState::IDLE};

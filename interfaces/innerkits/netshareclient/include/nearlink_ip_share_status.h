@@ -80,6 +80,35 @@ public:
     }
 };
 
+struct NearlinkIpSharePeerStatus {
+    uint32_t slot{0};
+    std::string peerId, contextId, ifaceName;
+    uint64_t generation{0}, sequence{0};
+    int32_t state{0}, selectedMode{1}; // RESERVED, CONFIGURING, ACTIVE, LIMITED, RELEASING, FAILED
+    bool hasUpstream{false};
+    NearlinkIpShareFamilyStatus ipv4, ipv6;
+    bool Valid() const
+    {
+        return slot < 32 && generation && peerId.size() <= 64 && contextId.size() <= 128 &&
+            ifaceName == "sleip" + std::to_string(slot) && state >= 0 && state <= 5 &&
+            (selectedMode == 1 || selectedMode == 3) && ipv4.Valid(false) && ipv6.Valid(true);
+    }
+    bool Write(Parcel &p) const
+    {
+        return Valid() && p.WriteUint32(slot) && p.WriteString(peerId) && p.WriteString(contextId) &&
+            p.WriteString(ifaceName) && p.WriteUint64(generation) && p.WriteUint64(sequence) &&
+            p.WriteInt32(state) && p.WriteInt32(selectedMode) && p.WriteBool(hasUpstream) &&
+            ipv4.Write(p) && ipv6.Write(p);
+    }
+    bool Read(Parcel &p)
+    {
+        return p.ReadUint32(slot) && p.ReadString(peerId) && p.ReadString(contextId) &&
+            p.ReadString(ifaceName) && p.ReadUint64(generation) && p.ReadUint64(sequence) &&
+            p.ReadInt32(state) && p.ReadInt32(selectedMode) && p.ReadBool(hasUpstream) &&
+            ipv4.Read(p) && ipv6.Read(p) && Valid();
+    }
+};
+
 class NearlinkIpShareStatus final : public Parcelable {
 public:
     NearlinkIpShareRole role {NearlinkIpShareRole::NONE};
@@ -96,21 +125,49 @@ public:
     int32_t requestedMode{1}, selectedMode{0}, netId{-1};
     bool serviceReady{false};
     NearlinkIpShareFamilyStatus ipv4, ipv6;
+    // Appended private same-version extension; old field order and transaction IDs stay intact.
+    int32_t supportedMaxTerminals{0}, maxTerminals{0};
+    uint32_t occupiedTerminals{0}, activeTerminals{0};
+    std::vector<NearlinkIpSharePeerStatus> peers;
+
+    bool ValidPeers() const
+    {
+        if (supportedMaxTerminals < 0 || supportedMaxTerminals > 32 || maxTerminals < 0 ||
+            maxTerminals > supportedMaxTerminals || peers.size() > static_cast<size_t>(maxTerminals) ||
+            occupiedTerminals != peers.size() || activeTerminals > occupiedTerminals ||
+            (role != NearlinkIpShareRole::GATEWAY && (maxTerminals || !peers.empty()))) return false;
+        uint32_t active = 0, previous = 0;
+        bool first = true;
+        for (const auto &peer : peers) {
+            if (!peer.Valid() || peer.slot >= static_cast<uint32_t>(maxTerminals) ||
+                (peer.selectedMode & requestedMode) != peer.selectedMode ||
+                peer.sequence != sequence || (!first && peer.slot <= previous)) return false;
+            active += peer.state == 2;
+            first = false;
+            previous = peer.slot;
+        }
+        return active == activeTerminals;
+    }
 
     bool Marshalling(Parcel &parcel) const override
     {
-        return peerAddress.size() <= 17 && ifaceName.size() <= 15 && ipv4Address.size() <= 15 &&
+        return ValidPeers() && peerAddress.size() <= 17 && ifaceName.size() <= 15 && ipv4Address.size() <= 15 &&
             errorStage.size() <= 31 && contextId.size() <= 64 && fallbackReason.size() <= 128 &&
             ipv4.Valid(false) && ipv6.Valid(true) && parcel.WriteInt32(static_cast<int32_t>(role)) && parcel.WriteInt32(static_cast<int32_t>(state)) &&
             parcel.WriteString(peerAddress) && parcel.WriteString(ifaceName) && parcel.WriteString(ipv4Address) &&
             parcel.WriteBool(hasUpstream) && parcel.WriteString(errorStage) && parcel.WriteInt32(errorCode) &&
             parcel.WriteString(contextId) && parcel.WriteUint64(generation) && parcel.WriteUint64(sequence) &&
             parcel.WriteInt32(requestedMode) && parcel.WriteInt32(selectedMode) && parcel.WriteString(fallbackReason) &&
-            parcel.WriteInt32(netId) && parcel.WriteBool(serviceReady) && ipv4.Write(parcel) && ipv6.Write(parcel);
+            parcel.WriteInt32(netId) && parcel.WriteBool(serviceReady) && ipv4.Write(parcel) && ipv6.Write(parcel) &&
+            parcel.WriteInt32(supportedMaxTerminals) && parcel.WriteInt32(maxTerminals) &&
+            parcel.WriteUint32(occupiedTerminals) && parcel.WriteUint32(activeTerminals) &&
+            NearlinkIpShareFamilyStatus::WriteList(parcel, peers, 32) && parcel.GetDataSize() <= 256 * 1024;
     }
 
     bool ReadFromParcel(Parcel &parcel)
     {
+        // 32 seats with the bounded address/route/DNS lists fit in this IPC budget.
+        if (parcel.GetDataSize() > 256 * 1024) return false;
         NearlinkIpShareStatus next;
         int32_t roleValue, stateValue;
         if (!parcel.ReadInt32(roleValue) || roleValue < 0 || roleValue > 2 ||
@@ -129,6 +186,9 @@ public:
             !next.ipv4.Read(parcel) || !next.ipv6.Read(parcel) || !next.ipv4.Valid(false) || !next.ipv6.Valid(true)) return false;
         next.role = static_cast<NearlinkIpShareRole>(roleValue);
         next.state = static_cast<NearlinkIpShareState>(stateValue);
+        if (!parcel.ReadInt32(next.supportedMaxTerminals) || !parcel.ReadInt32(next.maxTerminals) ||
+            !parcel.ReadUint32(next.occupiedTerminals) || !parcel.ReadUint32(next.activeTerminals) ||
+            !NearlinkIpShareFamilyStatus::ReadList(parcel, next.peers, 32) || !next.ValidPeers()) return false;
         *this = next;
         return true;
     }

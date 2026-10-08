@@ -434,6 +434,10 @@ int32_t NearlinkIpShareController::GetSupportedMaxTerminals(int32_t &supportedMa
     int32_t value = OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetSupportedMaxTerminals();
     if (value < 1 || value > 32) return NETMANAGER_EXT_ERR_OPERATION_FAILED;
     supportedMaxTerminals = value;
+    {
+        std::lock_guard lock(mutex_);
+        status_.supportedMaxTerminals = value;
+    }
     return NETMANAGER_EXT_SUCCESS;
 }
 
@@ -484,6 +488,9 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Start] controller initialization failed");
         return NETMANAGER_EXT_ERR_OPERATION_FAILED;
     }
+    int32_t supported = 0;
+    if (role == NearlinkIpShareRole::GATEWAY && GetSupportedMaxTerminals(supported) != 0)
+        return NETMANAGER_EXT_ERR_OPERATION_FAILED;
     std::lock_guard lock(mutex_);
     {
         if (!initialized_ || shuttingDown_) {
@@ -513,6 +520,11 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
         ++generation_;
         multiGateway_ = maxTerminals != 0;
         maxTerminals_ = maxTerminals;
+        status_.maxTerminals = role == NearlinkIpShareRole::GATEWAY ? (multiGateway_ ? maxTerminals : 1) : 0;
+        status_.supportedMaxTerminals = supported;
+        status_.occupiedTerminals = status_.activeTerminals = 0;
+        status_.peers.clear();
+        gatewayPeerLinks_.clear();
         status_.requestedMode = mode;
         linkGeneration_ = linkSequence_ = evidenceSequence_ = 0;
         dualStack_ = false;
@@ -1816,7 +1828,7 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle, bool deferFailure)
             gatewayReserved_ = false;
         }
         stopRequested_ = error != 0 && deferFailure;
-        if (error == 0) { multiGateway_ = false; maxTerminals_ = 0; }
+        if (error == 0) { multiGateway_ = false; maxTerminals_ = 0; gatewayPeerLinks_.clear(); }
         if (error == 0 && publishIdle) {
             idle.generation = status_.generation;
             idle.sequence = status_.sequence + 1;
@@ -1876,6 +1888,7 @@ void NearlinkIpShareController::Publish(NearlinkIpShareState state, const std::s
         status_.errorStage = errorStage;
         status_.errorCode = errorCode;
         ++status_.sequence;
+        if (status_.role == NearlinkIpShareRole::GATEWAY) RefreshGatewayStatusLocked();
         snapshot = status_;
         NETMGR_EXT_LOG_I("[NearlinkIpShare][Families] generation=%{public}llu sequence=%{public}llu netId=%{public}d "
                          "ipv4=%{public}d validation4=%{public}d ipv6=%{public}d validation6=%{public}d",

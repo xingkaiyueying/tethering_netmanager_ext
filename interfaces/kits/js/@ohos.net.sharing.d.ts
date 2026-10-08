@@ -62,7 +62,15 @@ declare namespace sharing {
     'IDLE' | 'STARTING' | 'DISCOVERING' | 'CONFIGURING' | 'IFACE_READY' | 'CHANNEL_READY' |
     'DHCP' | 'SERVING' | 'SERVING_NO_UPSTREAM' | 'ACTIVE' | 'STOPPING' | 'ERROR';
 
+  export interface NearlinkIpSharePeerStatus {
+    peerId: string; slot: number; contextId: string; generation: string; sequence: string;
+    state: 'RESERVED' | 'CONFIGURING' | 'ACTIVE' | 'LIMITED' | 'RELEASING' | 'FAILED';
+    ifaceName: string; selectedMode: NearlinkIpShareMode; hasUpstream: boolean;
+    ipv4: NearlinkIpShareFamilyStatus; ipv6: NearlinkIpShareFamilyStatus;
+  }
   export interface NearlinkIpShareStatus {
+    supportedMaxTerminals: number; maxTerminals: number;
+    occupiedTerminals: number; activeTerminals: number; peers: NearlinkIpSharePeerStatus[];
     role: NearlinkIpShareRole;
     state: NearlinkIpShareState;
     peerAddress: string;

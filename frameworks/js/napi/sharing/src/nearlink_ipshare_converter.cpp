@@ -122,6 +122,23 @@ napi_value FamilyToJs(napi_env env, const NearlinkIpShareFamilyStatus &family)
     }
     return value;
 }
+napi_value PeerToJs(napi_env env, const NearlinkIpSharePeerStatus &peer)
+{
+    constexpr const char *STATES[] = {"RESERVED", "CONFIGURING", "ACTIVE", "LIMITED", "RELEASING", "FAILED"};
+    auto value = NapiUtils::CreateObject(env);
+    Put(env, value, "slot", Number(env, peer.slot));
+    NapiUtils::SetStringPropertyUtf8(env, value, "peerId", peer.peerId);
+    NapiUtils::SetStringPropertyUtf8(env, value, "contextId", peer.contextId);
+    NapiUtils::SetStringPropertyUtf8(env, value, "ifaceName", peer.ifaceName);
+    NapiUtils::SetStringPropertyUtf8(env, value, "generation", std::to_string(peer.generation));
+    NapiUtils::SetStringPropertyUtf8(env, value, "sequence", std::to_string(peer.sequence));
+    NapiUtils::SetStringPropertyUtf8(env, value, "state", peer.state >= 0 && peer.state <= 5 ? STATES[peer.state] : "FAILED");
+    NapiUtils::SetStringPropertyUtf8(env, value, "selectedMode", ModeName(peer.selectedMode));
+    NapiUtils::SetBooleanProperty(env, value, "hasUpstream", peer.hasUpstream);
+    Put(env, value, "ipv4", FamilyToJs(env, peer.ipv4));
+    Put(env, value, "ipv6", FamilyToJs(env, peer.ipv6));
+    return value;
+}
 } // namespace
 
 napi_value NearlinkIpShareConverter::ToJs(napi_env env, const NearlinkIpShareStatus &status)
@@ -145,6 +162,11 @@ napi_value NearlinkIpShareConverter::ToJs(napi_env env, const NearlinkIpShareSta
     NapiUtils::SetBooleanProperty(env, value, "serviceReady", status.serviceReady);
     Put(env, value, "ipv4", FamilyToJs(env, status.ipv4));
     Put(env, value, "ipv6", FamilyToJs(env, status.ipv6));
+    NapiUtils::SetInt32Property(env, value, "supportedMaxTerminals", status.supportedMaxTerminals);
+    NapiUtils::SetInt32Property(env, value, "maxTerminals", status.maxTerminals);
+    Put(env, value, "occupiedTerminals", Number(env, status.occupiedTerminals));
+    Put(env, value, "activeTerminals", Number(env, status.activeTerminals));
+    Put(env, value, "peers", ListToJs(env, status.peers, PeerToJs));
     return value;
 }
 

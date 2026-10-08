@@ -168,6 +168,19 @@ void NearlinkIpShareController::ConfigureGatewayPeers(const OHOS::Nearlink::Near
             (entry.selectedMode & status_.requestedMode) != entry.selectedMode || !live.insert(entry.slot).second)
             return;
     }
+    {
+        std::lock_guard lock(mutex_);
+        gatewayPeerLinks_.clear();
+        for (const auto &entry : link.peerLinks) {
+            NearlinkIpSharePeerStatus peer;
+            peer.slot = entry.slot;
+            peer.generation = entry.generation;
+            peer.ifaceName = entry.ifaceName;
+            peer.selectedMode = entry.selectedMode;
+            peer.state = entry.releasing ? 4 : (entry.active ? 1 : 0);
+            gatewayPeerLinks_.push_back(peer);
+        }
+    }
     for (auto it = addressPeers_.begin(); it != addressPeers_.end();) {
         auto entry = std::find_if(link.peerLinks.begin(), link.peerLinks.end(), [&](const auto &e) {
             return !e.releasing && e.slot == it->first && e.generation == it->second.generation;
@@ -193,7 +206,7 @@ void NearlinkIpShareController::ConfigureGatewayPeers(const OHOS::Nearlink::Near
         dnsProxyStarted_ = NetsysController::GetInstance().StartDnsProxyListen() == 0;
     bool first = true;
     for (const auto &entry : link.peerLinks) {
-        if (entry.releasing)
+        if (entry.releasing || !entry.active)
             continue;
         unsigned index = if_nametoindex(entry.ifaceName.c_str());
         if (!index)
@@ -283,6 +296,107 @@ void NearlinkIpShareController::ConfigureGatewayPeers(const OHOS::Nearlink::Near
     }
     Publish(link.serviceReady ? (ready ? NearlinkIpShareState::SERVING : NearlinkIpShareState::SERVING_NO_UPSTREAM)
                               : NearlinkIpShareState::STARTING);
+}
+
+void NearlinkIpShareController::RefreshGatewayStatusLocked()
+{
+    // Called by Publish on the serialized tracker worker while holding the snapshot lock.
+    // Include NearLink's reserved seats and retained L3 cleanup ownership, ordered by slot.
+    if (!multiGateway_) {
+        status_.peers.clear();
+        status_.occupiedTerminals = status_.activeTerminals = 0;
+        if (status_.selectedMode == 0) return;
+        NearlinkIpSharePeerStatus peer;
+        peer.generation = status_.generation;
+        peer.sequence = status_.sequence;
+        peer.peerId = "slot:0/" + std::to_string(peer.generation);
+        peer.contextId = status_.contextId + "/" + peer.peerId;
+        peer.ifaceName = "sleip0";
+        peer.selectedMode = status_.selectedMode;
+        peer.hasUpstream = status_.hasUpstream;
+        peer.ipv4 = status_.ipv4;
+        peer.ipv6 = status_.ipv6;
+        bool configured = peer.ipv4.configurationAvailable &&
+            (peer.selectedMode != 3 || peer.ipv6.configurationAvailable);
+        peer.state = status_.state == NearlinkIpShareState::STOPPING ? 4 :
+            (configured ? (peer.hasUpstream ? 2 : 3) : 1);
+        if (peer.state == 4) {
+            peer.hasUpstream = false;
+            peer.ipv4 = {};
+            peer.ipv6 = {};
+        }
+        status_.peers.push_back(peer);
+        status_.occupiedTerminals = 1;
+        status_.activeTerminals = peer.state == 2;
+        return;
+    }
+    std::map<uint32_t, NearlinkIpSharePeerStatus> peers;
+    for (const auto &link : gatewayPeerLinks_) peers.emplace(link.slot, link);
+    for (const auto &[slot, local] : addressPeers_) {
+        auto &peer = peers[slot];
+        peer.slot = slot;
+        peer.generation = local.generation;
+        peer.ifaceName = local.iface;
+        peer.selectedMode = local.mode;
+        peer.hasUpstream = !local.releasing && local.interfaceForwarding && local.natEnabled &&
+            forwardingEnabled_ && dnsUpstreamReady_;
+        if (local.releasing || status_.state == NearlinkIpShareState::STOPPING) {
+            peer.state = 4;
+            peer.hasUpstream = false;
+            peer.ipv4 = {};
+            peer.ipv6 = {};
+            continue;
+        }
+        peer.ipv4.configurationAvailable = local.dhcpStarted && local.addressAdded && local.ipv4Error == 0;
+        peer.ipv4.phase = local.ipv4Error ? 3 : (peer.ipv4.configurationAvailable ? 2 : 1);
+        if (local.addressAdded) {
+            NearlinkIpShareAddress address;
+            address.address = local.addresses.gateway;
+            address.prefixLength = 24;
+            peer.ipv4.addresses.push_back(address);
+        }
+        peer.ipv4.hasError = local.ipv4Error != 0 || local.upstreamError != 0;
+        peer.ipv4.error = {4, 1, local.ipv4Error ? "DHCP" : "UPSTREAM",
+                          local.ipv4Error ? local.ipv4Error : local.upstreamError, true};
+        if (local.mode == 3) {
+            peer.ipv6.configurationAvailable = local.ipv6Ready;
+            peer.ipv6.phase = local.ipv6Ready ? 2 : (local.ipv6Error ? 3 : 1);
+            auto addressText = local.ipv6.Gateway();
+            if (!addressText.empty()) {
+                NearlinkIpShareAddress address;
+                address.address = addressText;
+                address.prefixLength = 64;
+                address.scopeId = local.ifindex;
+                peer.ipv6.addresses.push_back(address);
+            }
+            peer.ipv6.hasError = local.ipv6Error != 0 || local.upstreamError != 0;
+            peer.ipv6.error = {4, 2, local.ipv6Error ? "PREFIX" : "UPSTREAM",
+                              local.ipv6Error ? local.ipv6Error : local.upstreamError, true};
+        }
+        bool configured = peer.ipv4.configurationAvailable &&
+            (local.mode != 3 || peer.ipv6.configurationAvailable);
+        bool routed = peer.hasUpstream && (local.mode != 3 || local.ipv6Routed);
+        bool anyConfigured = peer.ipv4.configurationAvailable || peer.ipv6.configurationAvailable;
+        peer.state = configured ? (routed ? 2 : 3) :
+            (peer.ipv4.hasError || peer.ipv6.hasError ? (anyConfigured ? 3 : 5) : 1);
+        // G has forwarding evidence, not a per-terminal reachability probe. Leave validation UNKNOWN.
+    }
+    status_.peers.clear();
+    status_.activeTerminals = 0;
+    for (auto &[slot, peer] : peers) {
+        if (status_.state == NearlinkIpShareState::STOPPING) {
+            peer.state = 4;
+            peer.hasUpstream = false;
+            peer.ipv4 = {};
+            peer.ipv6 = {};
+        }
+        peer.peerId = "slot:" + std::to_string(slot) + "/" + std::to_string(peer.generation);
+        peer.contextId = status_.contextId + "/" + peer.peerId;
+        peer.sequence = status_.sequence;
+        status_.activeTerminals += peer.state == 2;
+        status_.peers.push_back(peer);
+    }
+    status_.occupiedTerminals = status_.peers.size();
 }
 
 } // namespace OHOS::NetManagerStandard

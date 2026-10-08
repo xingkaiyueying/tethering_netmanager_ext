@@ -20,6 +20,7 @@ with tempfile.TemporaryDirectory(prefix='p2-s3-') as directory:
 #include <string>
 #include <cstdint>
 class Parcel { public:
+size_t GetDataSize()const{return 0;}
 bool WriteInt32(int32_t){return true;} bool WriteUint32(uint32_t){return true;}
 bool WriteUint64(uint64_t){return true;} bool WriteBool(bool){return true;}
 bool WriteString(const std::string&){return true;}
@@ -46,6 +47,7 @@ std::string prefix;bool routed=false;
 inline static unsigned upstreamEpoch=0;
 bool HasPrefix()const{return !prefix.empty();}
 const std::string &CurrentPrefix()const{return prefix;}
+const std::string &Gateway()const{static std::string address="2001:db8::1";return address;}
 void SetGatewayPrefix(const std::string &p){prefix=p;}
 bool OwnsPrefix(const std::string &p)const{return !p.empty()&&prefix==p;}
 bool HasDefaultRouter()const{return routed;}
@@ -220,11 +222,20 @@ int main() {
     OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
     c->OnNearlinkStatus(link);q.Drain();
     assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM && c->addressPeers_.empty());
+    link.peerLinks={{0,10,3,"sleip0",false,false}};
+    c->ReconcileGatewayPeers(link);
+    assert(c->addressPeers_.empty() && c->status_.occupiedTerminals==1);
+    assert(c->status_.peers[0].state==0 && c->status_.activeTerminals==0);
+    assert(c->status_.ValidPeers());
     link.peerLinks={{0,10,3,"sleip0"},{1,11,1,"sleip1"}};
     link.state=NearlinkIpShareState::CHANNEL_READY;link.sequence=2;
     OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
     c->OnNearlinkStatus(link);q.Drain();
     assert(c->addressPeers_.size()==2);
+    assert(c->status_.occupiedTerminals==2 && c->status_.peers.size()==2 && c->status_.ValidPeers());
+    assert(c->status_.peers[0].slot==0 && c->status_.peers[1].slot==1);
+    assert(c->status_.peers[0].selectedMode==3 && c->status_.peers[1].selectedMode==1);
+    assert(!c->status_.peers[0].ipv6.externalAvailable && c->status_.peers[0].ipv6.validation==0);
     assert(c->addressPeers_[0].dhcpStarted && c->addressPeers_[1].dhcpStarted);
     assert(c->addressPeers_[0].addresses.gateway=="172.24.0.1");
     assert(c->addressPeers_[1].addresses.gateway=="172.24.1.1");
@@ -244,6 +255,7 @@ int main() {
     // Failed cleanup retains old ownership and blocks reuse of the slot by a new epoch.
     link.peerLinks[1].generation=12;errors["server-stop"]=-7;
     c->ReconcileGatewayPeers(link);assert(c->addressPeers_[1].generation==11);
+    assert(c->status_.peers[1].generation==11 && c->status_.peers[1].state==4);
     errors.clear();c->ReconcileGatewayPeers(link);assert(c->addressPeers_[1].generation==12);
     NetLinkInfo conflict;INetAddr conflictAddress;conflictAddress.family_=AF_INET;
     conflictAddress.address_="172.24.1.9";conflictAddress.prefixlen_=24;conflict.netAddrList_.push_back(conflictAddress);
@@ -271,6 +283,7 @@ int main() {
     OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
     c->OnNearlinkStatus(link);q.Drain();
     assert(c->addressPeers_.empty() && c->status_.ipv4Address.empty());
+    assert(c->status_.peers.empty() && c->status_.occupiedTerminals==0 && c->status_.activeTerminals==0);
     assert(c->status_.state==NearlinkIpShareState::SERVING_NO_UPSTREAM);
     assert(!q.delayed.empty());auto tick=q.delayed.front();q.delayed.pop_front();tick();q.Drain();
     assert(c->addressPeers_.empty()); // queued maintenance cannot revive a removed peer
