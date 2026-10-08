@@ -81,13 +81,16 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
                 if (ret == 0)
                     peer.forwardAttempted = false;
             }
-            if (peer.interfaceForwarding && hasV4 && peer.ipv4Error == 0 && !peer.natEnabled) {
+            // EnableNat owns both families. Losing IPv4 must not tear down a prepared
+            // IPv6 peer's MASQUERADE; RA/default readiness is checked independently below.
+            bool needsNat = (hasV4 && peer.ipv4Error == 0) || (peer.mode == 3 && peer.ipv6Prepared);
+            if (peer.interfaceForwarding && needsNat && !peer.natEnabled) {
                 peer.natAttempted = true;
                 ret = netsys.EnableNat(peer.iface, peer.upstreamIface);
                 peer.natEnabled = ret == 0;
                 if (ret == 0)
                     peer.natAttempted = false;
-            } else if ((!hasV4 || peer.ipv4Error != 0) && (peer.natEnabled || peer.natAttempted)) {
+            } else if (!needsNat && (peer.natEnabled || peer.natAttempted)) {
                 ret = netsys.DisableNat(peer.iface, peer.upstreamIface);
                 if (ret == 0)
                     peer.natEnabled = peer.natAttempted = false;
@@ -125,9 +128,11 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
                     provisioned = false;
             peer.ipv6.SetGatewayPrefix(provisioned ? prefix : peer.addresses.prefix);
             peer.ipv6Ready =
-                peer.ipv6.Advertise(present ? upstream : nullptr, provisioned && forwarding, dnsProxyStarted_);
+                peer.ipv6.Advertise(present ? upstream : nullptr, provisioned && forwarding && peer.natEnabled,
+                                    dnsProxyStarted_);
             peer.ipv6Routed =
-                provisioned && forwarding && peer.ipv6Ready && peer.ipv6.HasDefaultRouter() && dnsUpstreamReady_;
+                provisioned && forwarding && peer.natEnabled && peer.ipv6Ready && peer.ipv6.HasDefaultRouter() &&
+                dnsUpstreamReady_;
             auto now = std::chrono::steady_clock::now();
             if (peer.ipv6Ready) {
                 peer.ipv6PendingSince = {};
@@ -141,9 +146,10 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
         }
         NETMGR_EXT_LOG_I("[NearlinkIpShare][PeerUpstream] slot=%{public}u generation=%{public}llu "
                          "iface=%{public}s forward=%{public}d nat=%{public}d dns=%{public}d "
-                         "ipv6Routed=%{public}d code=%{public}d",
+                         "nat6=%{public}d ipv6Routed=%{public}d code=%{public}d",
                          slot, static_cast<unsigned long long>(peer.generation), peer.iface.c_str(), forwarding,
-                         usable && hasV4 && peer.natEnabled, dnsUpstreamReady_, peer.ipv6Routed, ret);
+                         usable && hasV4 && peer.natEnabled, dnsUpstreamReady_,
+                         usable && peer.mode == 3 && peer.natEnabled, peer.ipv6Routed, ret);
     }
     {
         std::lock_guard lock(mutex_);
@@ -174,8 +180,8 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
             if (status_.ipv6.hasError) {
                 status_.ipv6.error.plane = 4;
                 status_.ipv6.error.family = 2;
-                status_.ipv6.error.stage = "PREFIX";
-                status_.ipv6.error.code = NETMANAGER_EXT_ERR_OPERATION_FAILED;
+                status_.ipv6.error.stage = present && peer.interfaceForwarding && !peer.natEnabled ? "NAT" : "PREFIX";
+                status_.ipv6.error.code = peer.upstreamError ? peer.upstreamError : NETMANAGER_EXT_ERR_OPERATION_FAILED;
                 status_.ipv6.error.retryable = true;
             }
         }

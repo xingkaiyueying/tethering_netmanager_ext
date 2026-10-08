@@ -291,7 +291,7 @@ int main() {
     assert(c->addressPeers_[1].upstreamIface=="rmnet0" && c->addressPeers_[1].natEnabled);
     // Losing only IPv4 default removes NAT but retains independently routed IPv6.
     net.upstreamProperties.routeList_.clear();c->ConfigureUpstream();
-    assert(!c->addressPeers_[0].natEnabled && c->addressPeers_[0].ipv6Routed);
+    assert(c->addressPeers_[0].natEnabled && c->addressPeers_[0].ipv6Routed);
     net.upstreamProperties.routeList_={def4};c->ConfigureUpstream();
     // Whole upstream loss retains both local families and G global listener/forwarding ownership.
     net.hasDefault=false;c->OnUpstreamChanged();q.Drain();
@@ -300,6 +300,7 @@ int main() {
     assert(c->status_.ipv6.hasError && !c->addressPeers_[0].ipv6Routed);
     net.hasDefault=true;errors["nat-add:sleip1"]=-7;c->ConfigureUpstream();
     assert(c->addressPeers_[0].natEnabled && !c->addressPeers_[1].natEnabled && c->addressPeers_[1].natAttempted);
+    assert(c->addressPeers_[0].ipv6Routed && !c->addressPeers_[1].ipv6Routed);
     errors.clear();c->ConfigureUpstream();assert(c->addressPeers_[1].natEnabled);
     // Explicit routed pool is bound to its upstream; a mismatch keeps local-only IPv6.
     c->configuration_.routedPool="2001:db8:100::/48";c->configuration_.routedUpstream="eth0";
