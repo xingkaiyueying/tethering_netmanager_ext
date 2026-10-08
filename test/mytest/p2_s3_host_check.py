@@ -4,6 +4,7 @@ Does not prove Binder, kernel, product compilation, radio, routing, or DNS reach
 from pathlib import Path
 import subprocess
 import tempfile
+import os
 
 repo = Path(__file__).resolve().parents[2]
 workspace = repo.parent
@@ -42,10 +43,13 @@ namespace OHOS::NetManagerStandard {
 class NearlinkIpv6Runtime { public:
 bool Prepare(bool,const std::string&,const std::string& = "sleip0",const std::string& = ""){return call("ipv6-prepare")==0;}
 std::string prefix;bool routed=false;
+inline static unsigned upstreamEpoch=0;
+bool HasPrefix()const{return !prefix.empty();}
+const std::string &CurrentPrefix()const{return prefix;}
 void SetGatewayPrefix(const std::string &p){prefix=p;}
 bool OwnsPrefix(const std::string &p)const{return !p.empty()&&prefix==p;}
 bool HasDefaultRouter()const{return routed;}
-static std::string DeriveGatewayPrefix(const NetLinkInfo *u,uint32_t s){return u ? "2001:db8:10:"+std::to_string(s+1)+"::" : "";}
+static std::string DeriveGatewayPrefix(const NetLinkInfo *u,uint32_t s){return u ? "2001:db8:"+std::to_string(10+upstreamEpoch)+":"+std::to_string(s+1)+"::" : "";}
 bool Advertise(const NetLinkInfo*,bool f,bool){routed=f;return call("ra")==0;}
 bool Cleanup(){return call("ipv6-cleanup")==0;}
 }; }
@@ -54,7 +58,12 @@ bool Cleanup(){return call("ipv6-cleanup")==0;}
     put('nearlink_ipshare_controller.h', (source / 'include/nearlink_ipshare_controller.h').read_text())
     put('nearlink_ipshare_controller.cpp', (source / 'src/nearlink_ipshare_controller.cpp').read_text())
     put('nearlink_peer_address.cpp', (source / 'src/nearlink_peer_address.cpp').read_text())
-    put('nearlink_peer_upstream.cpp', (source / 'src/nearlink_peer_upstream.cpp').read_text())
+    before_ref = os.environ.get('P3_SWITCH_BEFORE_REF')
+    upstream_source = (source / 'src/nearlink_peer_upstream.cpp').read_text()
+    if before_ref:
+        upstream_source = subprocess.check_output(['git', '-c', f'safe.directory={repo.as_posix()}',
+            '-C', str(repo), 'show', before_ref + ':services/networksharemanager/src/nearlink_peer_upstream.cpp']).decode()
+    put('nearlink_peer_upstream.cpp', upstream_source)
     put('nearlink_family_validation.h', '#pragma once\nnamespace OHOS::NetManagerStandard { struct NearlinkFamilyValidation { int ipv4=0,ipv6=0; }; inline NearlinkFamilyValidation ValidateNearlinkFamilies(int,bool,bool) {return {};} }\n')
     put('dhcp_c_api.h', '''#pragma once
 #include "mock.h"
@@ -294,7 +303,10 @@ int main() {
     assert(c->addressPeers_[0].natEnabled && c->addressPeers_[0].ipv6Routed);
     net.upstreamProperties.routeList_={def4};c->ConfigureUpstream();
     // Whole upstream loss retains both local families and G global listener/forwarding ownership.
+    const auto prefix0=c->addressPeers_[0].ipv6.prefix;
+    const auto prefix1=c->addressPeers_[1].ipv6.prefix;
     net.hasDefault=false;c->OnUpstreamChanged();q.Drain();
+    assert(c->addressPeers_[0].ipv6.prefix==prefix0 && c->addressPeers_[1].ipv6.prefix==prefix1);
     assert(!c->status_.hasUpstream && !c->addressPeers_[0].natEnabled && !c->addressPeers_[1].natEnabled);
     assert(c->forwardingEnabled_ && c->dnsProxyStarted_ && c->addressPeers_[0].dhcpStarted);
     assert(c->status_.ipv6.hasError && !c->addressPeers_[0].ipv6Routed);
@@ -302,14 +314,33 @@ int main() {
     assert(c->addressPeers_[0].natEnabled && !c->addressPeers_[1].natEnabled && c->addressPeers_[1].natAttempted);
     assert(c->addressPeers_[0].ipv6Routed && !c->addressPeers_[1].ipv6Routed);
     errors.clear();c->ConfigureUpstream();assert(c->addressPeers_[1].natEnabled);
+    // Rapid off/on cycles must not mint ULA addresses or consume retirement slots.
+    for(int cycle=0;cycle<20;++cycle) {
+        net.hasDefault=false;c->ConfigureUpstream();
+        assert(c->addressPeers_[0].ipv6.prefix==prefix0 && c->addressPeers_[1].ipv6.prefix==prefix1);
+        ++NearlinkIpv6Runtime::upstreamEpoch;
+        net.hasDefault=true;c->ConfigureUpstream();
+        assert(c->addressPeers_[0].ipv6Routed && c->addressPeers_[1].ipv6Routed);
+        assert(c->addressPeers_[0].ipv6.prefix==prefix0 && c->addressPeers_[1].ipv6.prefix==prefix1);
+    }
+    NearlinkIpv6Runtime::upstreamEpoch=0;
+    // A new uplink candidate must not renumber either automatic NAT66 peer.
+    c->addressPeers_[0].ipv6.prefix="2001:db8:aa:1::";
+    c->addressPeers_[1].ipv6.prefix="2001:db8:aa:2::";
+    c->ConfigureUpstream();
+    assert(c->addressPeers_[0].ipv6.prefix=="2001:db8:aa:1::" && c->addressPeers_[0].ipv6Routed);
+    assert(c->addressPeers_[1].ipv6.prefix=="2001:db8:aa:2::" && c->addressPeers_[1].ipv6Routed);
+    c->ConfigureUpstream();
     // Explicit routed pool is bound to its upstream; a mismatch keeps local-only IPv6.
     c->configuration_.routedPool="2001:db8:100::/48";c->configuration_.routedUpstream="eth0";
     c->ConfigureUpstream();assert(!c->addressPeers_[0].ipv6Routed && c->status_.ipv6.hasError);
     c->configuration_.routedUpstream="rmnet0";c->ConfigureUpstream();assert(c->addressPeers_[1].ipv6Routed);
     c->configuration_.routedPool.clear();c->ConfigureUpstream();
     // A live/retiring prefix collision must not be advertised on a second peer.
+    c->addressPeers_[0].ipv6.prefix.clear();
     c->addressPeers_[1].ipv6.SetGatewayPrefix("2001:db8:10:1::");
     c->ConfigureUpstream();assert(!c->addressPeers_[0].ipv6Routed);
+    c->addressPeers_[1].ipv6.SetGatewayPrefix(prefix1);
     c->ConfigureUpstream();assert(c->addressPeers_[0].ipv6Routed);
     // NetId replacement on the same interface must also rebuild policy-rule ownership.
     ++net.netId;calls.clear();c->OnUpstreamChanged();q.Drain();

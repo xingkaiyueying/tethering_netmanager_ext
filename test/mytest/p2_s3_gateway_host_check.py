@@ -2,10 +2,15 @@
 from pathlib import Path
 import subprocess
 import tempfile
+import os
 
 repo = Path(__file__).resolve().parents[2]
 src = repo / 'services/networksharemanager'
 production = (src / 'src/nearlink_ipv6_runtime.cpp').read_text()
+before_ref = os.environ.get('P3_SWITCH_BEFORE_REF')
+if before_ref:
+    production = subprocess.check_output(['git', '-c', f'safe.directory={repo.as_posix()}', '-C', str(repo),
+        'show', before_ref + ':services/networksharemanager/src/nearlink_ipv6_runtime.cpp']).decode()
 prefix = production[production.index('constexpr const char *IFACE'):production.index('bool NearlinkIpv6Runtime::Set(')]
 prefix = prefix.replace('/proc/net/if_inet6', 'if_inet6_upstream.txt')
 advertise = production[production.index('bool NearlinkIpv6Runtime::Advertise('):production.index('bool NearlinkIpv6Runtime::Cleanup(')]
@@ -155,22 +160,40 @@ int main(){
  assert(runtime.Advertise(&up,true));assert(runtime.addresses_.size()==2);
  runtime.retired_[0].until=std::chrono::steady_clock::now()-std::chrono::seconds(1);
  assert(runtime.Advertise(&up,true));assert(runtime.retired_.empty());assert(runtime.addresses_.size()==1);
- // A fifth prefix must withdraw old DNS/default routing even while all four slots are retained.
+ // Reserve the active slot before retirement. A full explicit routed pool waits
+ // for cleanup without orphaning the last active address/route on every retry.
  for(const char* address : {"2001:db8:10:40::1","2001:db8:10:50::1","2001:db8:10:60::1","2001:db8:10:70::1"}) {
   up.netAddrList_[0].address_=address;runtime.Advertise(&up,true);
  }
- assert(runtime.retired_.size()==4 && runtime.prefix_.empty());
+ assert(runtime.retired_.size()==3 && runtime.prefix_=="2001:db8:10:61::");
+ assert(runtime.addresses_.size()==4 && runtime.routeOwned_);
  assert(runtime.daemon_->params.routerLifetime_==0 && runtime.daemon_->params.dnses_.empty());
- runtime.Advertise(nullptr,false);assert(runtime.daemon_->params.routerLifetime_==0);
+ auto deadlines=runtime.retired_;
+ for(int retry=0;retry<10;++retry) {
+  assert(!runtime.Advertise(&up,true));assert(runtime.prefix_=="2001:db8:10:61::");
+  for(size_t i=0;i<deadlines.size();++i)assert(runtime.retired_[i].until==deadlines[i].until);
+ }
  for(auto &old:runtime.retired_)old.until=std::chrono::steady_clock::now()-std::chrono::seconds(1);
  NetsysController::failRemove=true;runtime.Advertise(&up,true);
  assert(!runtime.retired_.empty()); // failed resources are retained for cleanup, never silently dropped
  NetsysController::failRemove=false;runtime.Advertise(&up,true);
- assert(runtime.retired_.empty() && runtime.prefix_=="2001:db8:10:71::");
+ assert(runtime.retired_.size()==1 && runtime.prefix_=="2001:db8:10:71::");
  kernelAddress(runtime.gateway_,0);
  runtime.Advertise(&up,true,false);
  assert(runtime.daemon_->params.dnses_.empty() && runtime.daemon_->params.rdnssLifetime_==0);
  runtime.Advertise(&up,true,true);assert(runtime.daemon_->params.dnses_.size()==1);
+ // Controller keeps the logical prefix while the upstream is absent. Exercise
+ // actual RA/DNS/default withdrawal and restoration without another address.
+ runtime.SetGatewayPrefix(runtime.CurrentPrefix());
+ auto active=runtime.CurrentPrefix();auto addressCount=runtime.addresses_.size();auto retiredCount=runtime.retired_.size();
+ for(int cycle=0;cycle<20;++cycle) {
+  assert(runtime.Advertise(nullptr,false));
+  assert(runtime.daemon_->params.routerLifetime_==0 && runtime.CurrentPrefix()==active);
+  up.netAddrList_[0].address_="2001:db8:"+std::to_string(cycle+100)+":20::1";
+  assert(runtime.Advertise(&up,true));assert(runtime.HasDefaultRouter());
+  assert(runtime.addresses_.size()==addressCount && runtime.retired_.size()==retiredCount);
+ }
+ puts("P3-S3 switch regression: 20 RA off/on cycles, bounded admission, failed cleanup retry PASS");
  NearlinkIpv6Runtime collision;collision.ifindex_=7;collision.layer2_=runtime.layer2_;
  NetLinkInfo adjacent;adjacent.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:20::1"});
  adjacent.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:21::1"});

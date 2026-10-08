@@ -103,8 +103,8 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
         if (peer.mode == 3 && peer.ipv6Prepared) {
             std::string prefix;
             bool provisioned = false;
+            const auto &pool = configuration_.GetNearlinkIpv6RoutedPool();
             if (present) {
-                const auto &pool = configuration_.GetNearlinkIpv6RoutedPool();
                 if (pool.empty()) {
                     // Preserve P2 automatic prefix derivation, with a unique /64 for each stable slot.
                     prefix = NearlinkIpv6Runtime::DeriveGatewayPrefix(upstream, peer.slot);
@@ -117,6 +117,14 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
                         prefix = routed.prefix;
                 }
             }
+            // Losing the uplink does not renumber the downstream logical link.
+            // Automatic NAT66 keeps one source prefix for this peer session:
+            // MASQUERADE uses the new selected uplink after every recovery.
+            // Explicit routed pools still require their newly provisioned prefix.
+            if (peer.ipv6.HasPrefix() &&
+                (!provisioned || pool.empty())) {
+                prefix = peer.ipv6.CurrentPrefix();
+            }
             if (present)
                 for (const auto &address : upstream->netAddrList_)
                     if (address.family_ == AF_INET6 &&
@@ -126,7 +134,9 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
             for (const auto &[otherSlot, other] : addressPeers_)
                 if (otherSlot != slot && other.ipv6.OwnsPrefix(prefix))
                     provisioned = false;
-            peer.ipv6.SetGatewayPrefix(provisioned ? prefix : peer.addresses.prefix);
+            if (!provisioned)
+                prefix = peer.ipv6.HasPrefix() ? peer.ipv6.CurrentPrefix() : peer.addresses.prefix;
+            peer.ipv6.SetGatewayPrefix(prefix.empty() ? peer.addresses.prefix : prefix);
             peer.ipv6Ready =
                 peer.ipv6.Advertise(present ? upstream : nullptr, provisioned && forwarding && peer.natEnabled,
                                     dnsProxyStarted_);

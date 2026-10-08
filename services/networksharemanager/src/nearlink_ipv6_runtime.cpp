@@ -506,6 +506,12 @@ bool NearlinkIpv6Runtime::PublishAdvertisement(const RaParams &params, const std
 bool NearlinkIpv6Runtime::SelectPrefix(std::string &prefix, std::string &dns, bool configured,
                                        std::chrono::steady_clock::time_point now)
 {
+    // Reserve the new active slot before retiring the current prefix. A routed
+    // pool that is temporarily full must not orphan a live address/route or
+    // reset its retirement deadline on every maintenance retry.
+    if (configured && !CanAdmitPrefix(prefix)) {
+        return false;
+    }
     if (prefix != prefix_ && !prefix_.empty()) {
         retired_.push_back({prefix_, gateway_, now + std::chrono::seconds(PREFIX_VALID_SECONDS), routeOwned_});
         prefix_.clear();

@@ -51,6 +51,14 @@ public:
   {
       return !prefix_.empty();
   }
+  const std::string &CurrentPrefix() const
+  {
+      return prefix_;
+  }
+  bool CanAdmitPrefix(const std::string &prefix) const
+  {
+      return OwnsPrefix(prefix) || retired_.size() + (HasPrefix() ? 1 : 0) < 4;
+  }
     const std::string &Gateway() const
     {
         return gateway_;
