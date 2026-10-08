@@ -29,7 +29,8 @@ constexpr int EOK=0, NETSYS_SUCCESS=0, NETMANAGER_SUCCESS=0, NETMANAGER_EXT_SUCC
 constexpr int NETMANAGER_EXT_ERR_PARAMETER_ERROR=-1, NETMANAGER_EXT_ERR_OPERATION_FAILED=-2;
 namespace NetsysNative { struct InterfaceConfigurationParcel { std::string ifName, ipv4Addr; }; }
 constexpr int NETMANAGER_EXT_ERR_LOCAL_PTR_NULL=-3, DHCP_SUCCESS=0;
-inline int strcpy_s(char *d, size_t n, const char *s) { if(strlen(s)>=n) return -1; strcpy(d,s); return 0; }
+inline int MockStrcpyS(char *d, size_t n, const char *s) { if(strlen(s)>=n) return -1; strcpy(d,s); return 0; }
+#define strcpy_s MockStrcpyS
 #define NETMGR_EXT_LOG_I(...) ((void)0)
 #define NETMGR_EXT_LOG_E(...) ((void)0)
 #include "nearlink_ip_share_status.h"

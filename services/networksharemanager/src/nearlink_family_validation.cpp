@@ -1,6 +1,7 @@
 /* Copyright (c) 2026 Huawei Device Co., Ltd. Licensed under the Apache License, Version 2.0. */
 #include "nearlink_family_validation.h"
 #include "net_conn_client.h"
+#include "netmgr_ext_log_wrapper.h"
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstring>
@@ -14,6 +15,13 @@
 
 namespace OHOS::NetManagerStandard {
 namespace {
+bool ProbeFailure(int32_t netId, int family, const char *stage, int32_t code)
+{
+    NETMGR_EXT_LOG_W("[NearlinkIpShare][Probe] netId=%{public}d family=%{public}d "
+                     "stage=%{public}s code=%{public}d", netId, family, stage, code);
+    return false;
+}
+
 bool ReadProbe(std::string &host, std::string &port, std::string &path, std::string &authority)
 {
     std::ifstream config("/system/etc/netdetectionurl.conf");
@@ -45,17 +53,21 @@ bool ReadProbe(std::string &host, std::string &port, std::string &path, std::str
 bool Http204(int32_t netId, const addrinfo &address, const std::string &host, const std::string &path)
 {
     int fd = socket(address.ai_family, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return false;
+    if (fd < 0) return ProbeFailure(netId, address.ai_family, "SOCKET", errno);
     auto check = [&]() {
-        if (NetConnClient::GetInstance().BindSocket(fd, netId) != 0) return false;
+        int32_t bindRet = NetConnClient::GetInstance().BindSocket(fd, netId);
+        if (bindRet != 0) return ProbeFailure(netId, address.ai_family, "BIND", bindRet);
         int flags = fcntl(fd, F_GETFL, 0);
         if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) return false;
         int ret = connect(fd, address.ai_addr, address.ai_addrlen);
-        if (ret != 0 && errno != EINPROGRESS) return false;
+        if (ret != 0 && errno != EINPROGRESS) return ProbeFailure(netId, address.ai_family, "CONNECT", errno);
         pollfd wait{fd, POLLOUT, 0};
         int error = 0; socklen_t size = sizeof(error);
-        if (poll(&wait, 1, 3000) <= 0 || getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) != 0 || error != 0)
-            return false;
+        int ready = poll(&wait, 1, 3000);
+        if (ready <= 0) return ProbeFailure(netId, address.ai_family, "CONNECT_WAIT", ready == 0 ? ETIMEDOUT : errno);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) != 0)
+            return ProbeFailure(netId, address.ai_family, "CONNECT_STATUS", errno);
+        if (error != 0) return ProbeFailure(netId, address.ai_family, "CONNECT_STATUS", error);
         if (fcntl(fd, F_SETFL, flags) != 0) return false;
         timeval timeout{3, 0};
         if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0 ||
@@ -64,19 +76,20 @@ bool Http204(int32_t netId, const addrinfo &address, const std::string &host, co
         size_t sent = 0;
         while (sent < request.size()) {
             auto count = send(fd, request.data() + sent, request.size() - sent, MSG_NOSIGNAL);
-            if (count <= 0) return false;
+            if (count <= 0) return ProbeFailure(netId, address.ai_family, "HTTP_SEND", count == 0 ? EIO : errno);
             sent += count;
         }
         char response[256]{}; size_t used = 0;
         while (used + 1 < sizeof(response)) {
             auto count = recv(fd, response + used, sizeof(response) - used - 1, 0);
-            if (count <= 0) return false;
+            if (count <= 0) return ProbeFailure(netId, address.ai_family, "HTTP_RECEIVE", count == 0 ? EIO : errno);
             used += count;
             if (strstr(response, "\r\n")) {
-                return strncmp(response, "HTTP/1.1 204 ", 13) == 0 || strncmp(response, "HTTP/1.0 204 ", 13) == 0;
+                bool valid = strncmp(response, "HTTP/1.1 204 ", 13) == 0 || strncmp(response, "HTTP/1.0 204 ", 13) == 0;
+                return valid || ProbeFailure(netId, address.ai_family, "HTTP_STATUS", EPROTO);
             }
         }
-        return false;
+        return ProbeFailure(netId, address.ai_family, "HTTP_HEADER", EMSGSIZE);
     };
     bool success = check(); close(fd); return success;
 }
@@ -86,13 +99,15 @@ bool CheckFamily(int32_t netId, int family, const std::string &host, const std::
     addrinfo hints{}; hints.ai_family = family; hints.ai_socktype = SOCK_STREAM;
     addrinfo *addresses = nullptr;
     queryparam query{}; query.qp_netid = netId; query.qp_type = QEURY_TYPE_NETSYS;
-    if (getaddrinfo_ext(host.c_str(), port.c_str(), &hints, &addresses, &query) != 0) return false;
+    int resolveRet = getaddrinfo_ext(host.c_str(), port.c_str(), &hints, &addresses, &query);
+    if (resolveRet != 0) return ProbeFailure(netId, family, "DNS", resolveRet);
     bool success = false; unsigned tried = 0;
     for (auto entry = addresses; entry && tried < 2 && !success; entry = entry->ai_next) {
         if (entry->ai_family != family) continue;
         ++tried; success = Http204(netId, *entry, authority, path);
     }
     if (addresses) freeaddrinfo(addresses);
+    if (tried == 0) return ProbeFailure(netId, family, "DNS_EMPTY", 0);
     return success;
 }
 }
@@ -104,6 +119,8 @@ NearlinkFamilyValidation ValidateNearlinkFamilies(int32_t netId, bool ipv4, bool
     if (!ReadProbe(host, port, path, authority)) return result;
     if (ipv4) result.ipv4 = CheckFamily(netId, AF_INET, host, port, path, authority) ? 2 : 3;
     if (ipv6) result.ipv6 = CheckFamily(netId, AF_INET6, host, port, path, authority) ? 2 : 3;
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][ProbeResult] netId=%{public}d ipv4=%{public}d ipv6=%{public}d",
+                     netId, result.ipv4, result.ipv6);
     return result;
 }
 } // namespace OHOS::NetManagerStandard

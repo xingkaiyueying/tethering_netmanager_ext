@@ -1548,6 +1548,9 @@ void NearlinkIpShareController::ValidateFamilies()
                 self->status_.ipv4.externalAvailable = result.ipv4 == 2 && self->status_.ipv4.configurationAvailable;
                 self->status_.ipv6.externalAvailable = result.ipv6 == 2 && self->status_.ipv6.configurationAvailable;
             }
+            // Failed startup probes retry promptly without recreating the network or either family.
+            self->nextValidation_ = std::chrono::steady_clock::now() +
+                                    std::chrono::seconds(result.ipv4 == 3 || result.ipv6 == 3 ? 5 : 30);
             self->RefreshFamilyStatus();
         });
     }).detach();
@@ -1765,6 +1768,9 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle, bool deferFailure)
         }
         status_.ipv4Address.clear();
         status_.hasUpstream = false;
+        status_.netId = -1;
+        status_.ipv4 = NearlinkIpShareFamilyStatus{};
+        status_.ipv6 = NearlinkIpShareFamilyStatus{};
     }
     if (error != 0) {
         if (deferFailure) {

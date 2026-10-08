@@ -33,7 +33,7 @@ class Parcelable { public: virtual ~Parcelable()=default; virtual bool Marshalli
                  'netmgr_ext_log_wrapper.h', 'netsys_controller.h', 'networkshare_tracker.h', 'net_manager_ext_constants.h', 'securec.h']:
         put(name, '#pragma once\n#include "mock.h"\n')
     # Socket parsing uses WinSock, not a home-made IPv6 parser.
-    put('netinet/ip.h', '#pragma once\n#include <winsock2.h>\n#include <ws2tcpip.h>\n#undef ERROR\nextern "C" int inet_pton(int,const char*,void*);\nextern "C" const char* inet_ntop(int,const void*,char*,size_t);\n')
+    put('netinet/ip.h', '#pragma once\n#include <winsock2.h>\n#include <ws2tcpip.h>\n#undef ERROR\n#ifndef InetPtonA\nextern "C" int inet_pton(int,const char*,void*);\n#endif\n#ifndef InetNtopA\nextern "C" const char* inet_ntop(int,const void*,char*,size_t);\n#endif\n')
     put('arpa/inet.h', '#include <netinet/ip.h>\n')
     put('net/if.h', '#pragma once\ninline unsigned mockIfIndex=7;\ninline unsigned if_nametoindex(const char*) { return mockIfIndex; }\n')
     put('nearlink_ipv6_runtime.h', '''#pragma once
@@ -364,6 +364,15 @@ int main() {
     assert(c->addressPeers_.size()==2 && std::find(calls.begin(),calls.end(),"nearlink-stop")==calls.end());
     assert(c->StopGateway()==0);q.Drain();assert(c->status_.state==NearlinkIpShareState::IDLE);
     puts("gateway stop: one-click retry, lower drain, idempotence, admission, bounded failure and stale retry PASS");
+    c->status_.netId=106;
+    c->status_.ipv4.configurationAvailable=c->status_.ipv6.configurationAvailable=true;
+    c->status_.ipv4.externalAvailable=c->status_.ipv6.externalAvailable=true;
+    c->status_.ipv4.validation=c->status_.ipv6.validation=2;
+    assert(c->Cleanup(false));
+    assert(c->status_.netId==-1 && !c->status_.ipv4.configurationAvailable && !c->status_.ipv6.configurationAvailable);
+    assert(!c->status_.ipv4.externalAvailable && !c->status_.ipv6.externalAvailable);
+    assert(c->status_.ipv4.validation==0 && c->status_.ipv6.validation==0);
+    puts("cleanup without IDLE publication clears stale family availability/validation and netId PASS");
     puts("actual_controller: no-peer gateway capacity and zero-peer projection, dual merge, single supplier, independent failure/recovery, DNS withdrawal, per-peer DHCP/RA, slot-zero release, failure retention and address capacity PASS");
 }
 ''')
