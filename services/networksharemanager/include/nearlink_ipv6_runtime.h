@@ -76,7 +76,7 @@ private:
         bool route;
     };
     std::vector<Retired> retired_;
-    int lastRouterLifetime_{-1};
+    int lastRouterLifetime_{-1}, lastMtu_{-1};
     std::map<std::string, std::string> settings_;
     std::vector<std::string> addresses_;
     std::string layer2_, prefix_, gateway_, dns_, advertisedPrefix_;

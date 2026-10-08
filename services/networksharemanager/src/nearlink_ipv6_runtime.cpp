@@ -415,7 +415,20 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
     RaParams params;
     params.layer3_ = true;
     params.macAddr_ = layer2_;
-    params.mtu_ = 1500;
+    // The upstream may be narrower than the TUN (cellular commonly uses 1400).
+    // Use only the selected link; omitted link properties can be recovered from sysfs.
+    int mtu = 1500;
+    if (upstream) {
+        if (upstream->mtu_ >= 1280)
+            mtu = std::min(mtu, static_cast<int>(upstream->mtu_));
+        if (!upstream->ifaceName_.empty()) {
+            std::ifstream input("/sys/class/net/" + upstream->ifaceName_ + "/mtu");
+            int kernelMtu = 0;
+            if (input >> kernelMtu && kernelMtu >= 1280)
+                mtu = std::min(mtu, kernelMtu);
+        }
+    }
+    params.mtu_ = mtu;
     // Match NetworkShare's PAN order: configure the local address and route
     // before advertising the prefix. The kernel completes DAD asynchronously.
     bool gatewayReady = configured && ReconcileGatewayAddress();
@@ -451,7 +464,7 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
         dns.clear();
     }
     std::string announcedPrefix = gatewayReady ? prefix_ : "";
-    bool changed = announcedPrefix != advertisedPrefix_ || dns != dns_;
+    bool changed = announcedPrefix != advertisedPrefix_ || dns != dns_ || params.mtu_ != lastMtu_;
     bool published = PublishAdvertisement(params, dns, changed);
     if (published) {
         advertisedPrefix_ = announcedPrefix;
@@ -485,6 +498,7 @@ bool NearlinkIpv6Runtime::PublishAdvertisement(const RaParams &params, const std
         return false;
     }
     lastRouterLifetime_ = params.routerLifetime_;
+    lastMtu_ = params.mtu_;
     dns_ = dns;
     return true;
 }

@@ -45,12 +45,14 @@ void BuildNewRa(const RaParams&p){params=p;}bool AdvertiseNow(){if(failNext>0){-
 #include <vector>
 namespace OHOS::NetManagerStandard {
 struct Address {int family_=0;unsigned prefixlen_=0;std::string address_;};
-struct Route {Address destination_;};struct NetLinkInfo {std::string ifaceName_;std::vector<Address> netAddrList_;std::vector<Route> routeList_;};
+struct Route {Address destination_;};struct NetLinkInfo {uint16_t mtu_=0;std::string ifaceName_;std::vector<Address> netAddrList_;std::vector<Route> routeList_;};
 }
 ''')
     put('nearlink_ipv6_runtime.h', (src / 'include/nearlink_ipv6_runtime.h').read_text())
     put('nearlink_peer_address_pool.h', (src / 'include/nearlink_peer_address_pool.h').read_text())
+    put('sysfs/rmnet0/mtu', '1400\n')
     advertise = advertise.replace('/proc/net/if_inet6', 'if_inet6.txt')
+    advertise = advertise.replace('/sys/class/net/', 'sysfs/')
     put('test.cpp', r'''
 #include <memory>
 #include <set>
@@ -125,6 +127,14 @@ int main(){
  assert(runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==1);
  assert(runtime.daemon_->params.dnses_.size()==1);
  assert(runtime.daemon_->params.prefixes_.size()==1);
+ // A narrower upstream MTU must be sent immediately, including an unchanged prefix/DNS.
+ up.mtu_=1400;
+ auto beforeMtu=RouterAdvertisementDaemon::sent.size();
+ assert(runtime.Advertise(&up,true));
+ assert(runtime.daemon_->params.mtu_==1400 && RouterAdvertisementDaemon::sent.size()==beforeMtu+1);
+ up.mtu_=1280;assert(runtime.Advertise(&up,true));assert(runtime.daemon_->params.mtu_==1280);
+ up.mtu_=9000;assert(runtime.Advertise(&up,true));assert(runtime.daemon_->params.mtu_==1500);
+ up.mtu_=0;assert(runtime.Advertise(&up,true));assert(runtime.daemon_->params.mtu_==1500);
  assert(runtime.daemon_->params.routerLifetime_==180);
  RouterAdvertisementDaemon::failNext=1;
  assert(!runtime.Advertise(&up,true,false));assert(!runtime.dns_.empty());
@@ -182,6 +192,7 @@ int main(){
  kernelAddress(missingRoute.gateway_,0);
  missingRoute.Advertise(&cellular,true);
  assert(missingRoute.daemon_->params.routerLifetime_==180);
+ assert(missingRoute.daemon_->params.mtu_==1400); // Recover omitted cellular link MTU from selected sysfs link.
  NetLinkInfo wifi=cellular;wifi.ifaceName_="wlan0";
  missingRoute.Advertise(&wifi,true);
  assert(missingRoute.daemon_->params.routerLifetime_==0); // Another connected interface is not the selected upstream.
@@ -190,6 +201,7 @@ int main(){
  kernelAddress(missingRoute.gateway_,0);
  missingRoute.Advertise(&wifi,true);
  assert(missingRoute.daemon_->params.routerLifetime_==180);
+ assert(missingRoute.daemon_->params.mtu_==1500); // Do not reuse rmnet0 MTU for the selected Wi-Fi link.
  routedInterface.clear();
  missingRoute.Advertise(&cellular,true);
  assert(missingRoute.daemon_->params.routerLifetime_==0);
