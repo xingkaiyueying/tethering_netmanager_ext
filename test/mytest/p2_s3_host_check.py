@@ -196,6 +196,29 @@ int main() {
     assert(c->status_.ipv6.phase==3 && c->status_.ipv6.hasError && c->status_.ipv6.error.stage=="PREFIX");
     errors.clear();c->ConfigureUpstream();assert(c->status_.ipv6.configurationAvailable);
     assert(c->status_.ipv6.phase==2 && !c->status_.ipv6.hasError && c->status_.ipv6.error.code==0);
+    // Legacy acquisitions can fail after partially creating a kernel resource.
+    assert(c->CleanupUpstream()==0);
+    Route legacyDefault;legacyDefault.destination_.family_=AF_INET;legacyDefault.destination_.prefixlen_=0;
+    net.upstreamProperties.routeList_.push_back(legacyDefault);
+    for (const auto &failure : {"forward-add", "iface-forward-add", "nat-add"}) {
+        errors[failure]=-7;c->ConfigureUpstream();
+        assert(c->forwardingAttempted_);
+        if (std::string(failure)!="forward-add") assert(c->interfaceForwardAttempted_);
+        if (std::string(failure)=="nat-add") assert(c->natAttempted_ && !c->natEnabled_);
+        const std::string oldUpstream=c->upstreamIface_;
+        const char *release=std::string(failure)=="forward-add" ? "forward-del" :
+            (std::string(failure)=="iface-forward-add" ? "iface-forward-del" : "nat-del");
+        errors[release]=-8;
+        assert(c->CleanupUpstream()==-8 && c->upstreamIface_==oldUpstream);
+        assert(c->forwardingAttempted_);
+        if (std::string(failure)=="iface-forward-add") assert(c->interfaceForwardAttempted_);
+        if (std::string(failure)=="nat-add") assert(c->natAttempted_);
+        assert(std::count(calls.begin(),calls.end(),release)>0);
+        errors.clear();assert(c->CleanupUpstream()==0);
+        assert(!c->forwardingAttempted_ && !c->interfaceForwardAttempted_ && !c->natAttempted_);
+        assert(c->upstreamIface_.empty() && c->upstreamNetId_==-1);
+    }
+    net.upstreamProperties.routeList_.clear();
     c->Cleanup();net.hasDefault=false;
     auto oldSession=session;
     errors["ipv6-prepare"]=-1;
@@ -432,8 +455,7 @@ int main() {
     assert(c->status_.state==NearlinkIpShareState::STOPPING && c->stopRequested_);
     lower.snapshot.role=NearlinkIpShareRole::NONE;lower.snapshot.state=NearlinkIpShareState::IDLE;
     retryStop();assert(c->status_.state==NearlinkIpShareState::IDLE);lower.drainOnStop=true;
-    // Remote release busy causes a bounded restart in the originally requested
-    // mode. Late callbacks and Stop cancel the delayed work by generation.
+    // Only locally observed STOPPING causes a bounded startup wait.
     auto startupBusy=[&](uint64_t gen) {
         OHOS::Nearlink::NearlinkIpShareStatus busy;
         busy.role=NearlinkIpShareRole::TERMINAL;busy.peerAddress=peer;busy.ifaceName="sleip0";
@@ -441,17 +463,30 @@ int main() {
         busy.selectedMode=3;busy.errorStage="iposl-config";busy.errorCode=-6;
         lower.snapshot=busy;c->HandleNearlinkStatus(busy);
     };
-    assert(c->StartTerminal(peer,3)==0);q.Drain();startupBusy(100);
-    assert(c->status_.state==NearlinkIpShareState::CONFIGURING && c->terminalRestartPending_);
+    lower.snapshot.state=NearlinkIpShareState::STOPPING;
+    assert(c->StartTerminal(peer,3)==0);q.Drain();
+    assert(c->terminalRestartPending_);
+    lower.snapshot.role=NearlinkIpShareRole::NONE;lower.snapshot.state=NearlinkIpShareState::IDLE;
     calls.clear();retryStop();assert(std::count(calls.begin(),calls.end(),"nearlink-start")==1);
     assert(c->nearlinkStarted_ && c->status_.requestedMode==3 && !c->terminalRestartPending_);
-    startupBusy(101);auto staleStart=q.delayed.back();q.delayed.clear();
+    assert(c->StopTerminal()==0);q.Drain();
+    lower.snapshot.state=NearlinkIpShareState::STOPPING;
+    assert(c->StartTerminal(peer,3)==0);q.Drain();
+    auto staleStart=q.delayed.back();q.delayed.clear();
     assert(c->StopTerminal()==0);q.Drain();calls.clear();staleStart();q.Drain();
     assert(std::find(calls.begin(),calls.end(),"nearlink-start")==calls.end());
+    assert(c->status_.state==NearlinkIpShareState::STOPPING);
+    lower.snapshot.role=NearlinkIpShareRole::NONE;lower.snapshot.state=NearlinkIpShareState::IDLE;
+    retryStop();
     assert(c->status_.state==NearlinkIpShareState::IDLE);
     assert(c->StartTerminal(peer,3)==0);q.Drain();
-    for(uint64_t gen=200;gen<203;++gen) {startupBusy(gen);retryStop();}
-    startupBusy(203);assert(c->status_.state==NearlinkIpShareState::ERROR && q.delayed.empty());
+    startupBusy(200);assert(c->status_.state==NearlinkIpShareState::ERROR && !c->terminalRestartPending_);
+    assert(c->StopTerminal()==0);q.Drain();
+    lower.snapshot.state=NearlinkIpShareState::STOPPING;
+    assert(c->StartTerminal(peer,3)==0);q.Drain();
+    retryStop();retryStop();retryStop();retryStop();
+    assert(c->status_.state==NearlinkIpShareState::ERROR && !c->terminalRestartPending_);
+    lower.snapshot.role=NearlinkIpShareRole::NONE;lower.snapshot.state=NearlinkIpShareState::IDLE;
     assert(c->StopTerminal()==0);q.Drain();
     // DAD/RA admission stays CONFIGURING for ten seconds, then errors. A
     // retiring first slot must not replace the remaining live peer's summary.
@@ -464,7 +499,7 @@ int main() {
     c->addressPeers_[0].releasing=true;c->addressPeers_[0].ipv6Error=-7;
     c->ConfigureUpstream();assert(!c->status_.ipv6.hasError && c->addressPeers_[1].ipv6Routed);
     assert(c->StopGateway()==0);q.Drain();net.hasDefault=false;
-    puts("rapid terminal restart: lower drain, queued start cancellation, peer busy retry, mode retention, bounded failure, stop cancellation and IPv6 projection PASS");
+    puts("terminal restart: local drain wait, generic rejection ends, mode retention, bounded failure and stop cancellation PASS");
     c->status_.netId=106;
     c->status_.ipv4.configurationAvailable=c->status_.ipv6.configurationAvailable=true;
     c->status_.ipv4.externalAvailable=c->status_.ipv6.externalAvailable=true;

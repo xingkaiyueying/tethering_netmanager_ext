@@ -535,7 +535,6 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
         networkDirty_ = false;
         ipv6Addresses_ = DhcpL3Ipv6Snapshot{};
         stopRequested_ = false;
-        terminalStartRetries_ = 0;
         terminalRestartPending_ = false;
         status_.state = NearlinkIpShareState::STARTING;
         status_.role = role;
@@ -551,6 +550,15 @@ int32_t NearlinkIpShareController::Start(NearlinkIpShareRole role, const std::st
                                                              generation = generation_.load()]() {
             if (!self->IsCurrentSession(generation)) return;
             self->Publish(NearlinkIpShareState::STARTING);
+            if (role == NearlinkIpShareRole::TERMINAL) {
+                OHOS::Nearlink::NearlinkIpShareStatus current;
+                if (OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current) == 0 &&
+                    current.state == OHOS::Nearlink::NearlinkIpShareState::STOPPING) {
+                    self->terminalRestartPending_ = true;
+                    self->RetryTerminalStart();
+                    return;
+                }
+            }
             int32_t ret = maxTerminals != 0
                               ? OHOS::Nearlink::NearlinkIpShareClient::GetInstance().StartGatewayAny(mode, maxTerminals)
                               : role == NearlinkIpShareRole::GATEWAY
@@ -746,21 +754,7 @@ void NearlinkIpShareController::HandleNearlinkStatus(const OHOS::Nearlink::Nearl
                      static_cast<int32_t>(role), static_cast<int32_t>(status.state),
                      MaskPeer(status.peerAddress).c_str(), status.ifaceName.c_str());
     if (status.state == OHOS::Nearlink::NearlinkIpShareState::ERROR) {
-        // A reconnect can reach G before its old peer's L3 cleanup completes.
-        // Retry only startup lifecycle failures, with no DHCP/network ownership.
-        if (role == NearlinkIpShareRole::TERMINAL && !dhcpClientStarted_ && terminalStartRetries_ < 3 &&
-            ((status.errorStage == "iposl-config" && status.errorCode == -6) || status.errorStage == "channel")) {
-            ++terminalStartRetries_;
-            NETMGR_EXT_LOG_I("[NearlinkIpShare][Restart] attempt=%{public}u stage=%{public}s code=%{public}d",
-                             terminalStartRetries_, status.errorStage.c_str(), status.errorCode);
-            if (!Cleanup(false)) return;
-            linkGeneration_ = linkSequence_ = evidenceSequence_ = 0;
-            dualStack_ = channelReady_ = false;
-            terminalRestartPending_ = true;
-            Publish(NearlinkIpShareState::CONFIGURING);
-            RetryTerminalStart();
-            return;
-        }
+        // A generic wire rejection cannot prove the gateway's old peer is draining.
         Fail(status.errorStage.empty() ? "LINK" : status.errorStage, status.errorCode);
         return;
     }
@@ -977,10 +971,12 @@ void NearlinkIpShareController::ConfigureUpstream()
     dnsUpstreamReady_ = dnsRet == NETSYS_SUCCESS;
     int32_t ret = 0;
     if (!forwardingEnabled_) {
+        forwardingAttempted_ = true;
         ret = NetsysController::GetInstance().IpEnableForwarding(FORWARDING_REQUESTER);
         forwardingEnabled_ = ret == 0;
     }
     if (forwardingEnabled_ && !interfaceForwarding_) {
+        interfaceForwardAttempted_ = true;
         ret = NetsysController::GetInstance().IpfwdAddInterfaceForward(IFACE_NAME, upstreamIface_);
         interfaceForwarding_ = ret == 0;
     }
@@ -988,12 +984,14 @@ void NearlinkIpShareController::ConfigureUpstream()
         return route.destination_.family_ == AF_INET && route.destination_.prefixlen_ == 0;
     });
     if (interfaceForwarding_ && hasV4Route && !natEnabled_) {
+        natAttempted_ = true;
         ret = NetsysController::GetInstance().EnableNat(IFACE_NAME, upstreamIface_);
         natEnabled_ = ret == 0;
-    } else if (!hasV4Route && natEnabled_) {
+    } else if (!hasV4Route && (natEnabled_ || natAttempted_)) {
         ret = NetsysController::GetInstance().DisableNat(IFACE_NAME, upstreamIface_);
         if (ret == 0) {
             natEnabled_ = false;
+            natAttempted_ = false;
         }
     }
     ConfigureGatewayIpv6(&*link);
@@ -1699,12 +1697,19 @@ int32_t NearlinkIpShareController::CleanupUpstream()
         }
         NETMGR_EXT_LOG_I("[NearlinkIpShare][Cleanup] upstream release code=%{public}d", ret);
     };
-    if (natEnabled_) {
-        release(natEnabled_, NetsysController::GetInstance().DisableNat(IFACE_NAME, upstreamIface_));
+    if (natEnabled_ || natAttempted_) {
+        int32_t ret = NetsysController::GetInstance().DisableNat(IFACE_NAME, upstreamIface_);
+        release(natEnabled_, ret);
+        if (ret == NETSYS_SUCCESS) {
+            natAttempted_ = false;
+        }
     }
-    if (interfaceForwarding_) {
-        release(interfaceForwarding_,
-                NetsysController::GetInstance().IpfwdRemoveInterfaceForward(IFACE_NAME, upstreamIface_));
+    if (interfaceForwarding_ || interfaceForwardAttempted_) {
+        int32_t ret = NetsysController::GetInstance().IpfwdRemoveInterfaceForward(IFACE_NAME, upstreamIface_);
+        release(interfaceForwarding_, ret);
+        if (ret == NETSYS_SUCCESS) {
+            interfaceForwardAttempted_ = false;
+        }
     }
     if ((forwardingEnabled_ || forwardingAttempted_) && error == NETSYS_SUCCESS) {
         int32_t ret = NetsysController::GetInstance().IpDisableForwarding(FORWARDING_REQUESTER);

@@ -133,7 +133,6 @@ private:
     bool multiGateway_{false};
     int32_t maxTerminals_{0};
     bool nearlinkStarted_{false};
-    uint32_t terminalStartRetries_{0};
     bool terminalRestartPending_{false};
     bool localInterfaceAdded_{false};
     bool localRouteAdded_{false};
@@ -144,7 +143,9 @@ private:
     bool forwardingEnabled_{false};
     bool forwardingAttempted_{false};
     bool interfaceForwarding_{false};
+    bool interfaceForwardAttempted_{false};
     bool natEnabled_{false};
+    bool natAttempted_{false};
     bool dhcpClientStarted_{false};
     std::chrono::steady_clock::time_point leaseExpiry_{};
     uint32_t netSupplierId_{0};

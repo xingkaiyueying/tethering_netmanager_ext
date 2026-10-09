@@ -52,6 +52,37 @@ void SetNearlinkCallback(const NetworkShareClient *client, const sptr<INearlinkI
         g_nearlinkCallbacks[client] = callback;
     }
 }
+
+} // namespace
+
+namespace {
+void CopyNearlinkStatusData(NearlinkIpShareStatus &status, const NearlinkIpShareStatus &reply)
+{
+    // Copy data only across CFI DSOs; do not assign Parcelable's vtable-bearing base.
+    status.role = reply.role;
+    status.state = reply.state;
+    status.peerAddress = reply.peerAddress;
+    status.ifaceName = reply.ifaceName;
+    status.ipv4Address = reply.ipv4Address;
+    status.hasUpstream = reply.hasUpstream;
+    status.errorStage = reply.errorStage;
+    status.errorCode = reply.errorCode;
+    status.contextId = reply.contextId;
+    status.fallbackReason = reply.fallbackReason;
+    status.generation = reply.generation;
+    status.sequence = reply.sequence;
+    status.requestedMode = reply.requestedMode;
+    status.selectedMode = reply.selectedMode;
+    status.netId = reply.netId;
+    status.serviceReady = reply.serviceReady;
+    status.ipv4 = reply.ipv4;
+    status.ipv6 = reply.ipv6;
+    status.supportedMaxTerminals = reply.supportedMaxTerminals;
+    status.maxTerminals = reply.maxTerminals;
+    status.occupiedTerminals = reply.occupiedTerminals;
+    status.activeTerminals = reply.activeTerminals;
+    status.peers = reply.peers;
+}
 } // namespace
 void NetworkShareLoadCallback::OnLoadSystemAbilitySuccess(
     int32_t systemAbilityId, const sptr<IRemoteObject> &remoteObject)
@@ -347,26 +378,7 @@ int32_t NetworkShareClient::GetNearlinkIpShareStatus(NearlinkIpShareStatus &stat
     NearlinkIpShareStatus reply;
     int32_t ret = proxy->GetNearlinkIpShareStatus(reply);
     if (ret == NETMANAGER_SUCCESS) {
-        // The caller may have constructed status in a different CFI DSO.
-        // Copy data only; Parcelable's generated assignment checks its vtable.
-        status.role = reply.role;
-        status.state = reply.state;
-        status.peerAddress = reply.peerAddress;
-        status.ifaceName = reply.ifaceName;
-        status.ipv4Address = reply.ipv4Address;
-        status.hasUpstream = reply.hasUpstream;
-        status.errorStage = reply.errorStage;
-        status.errorCode = reply.errorCode;
-        status.contextId = reply.contextId;
-        status.fallbackReason = reply.fallbackReason;
-        status.generation = reply.generation;
-        status.sequence = reply.sequence;
-        status.requestedMode = reply.requestedMode;
-        status.selectedMode = reply.selectedMode;
-        status.netId = reply.netId;
-        status.serviceReady = reply.serviceReady;
-        status.ipv4 = reply.ipv4;
-        status.ipv6 = reply.ipv6;
+        CopyNearlinkStatusData(status, reply);
     }
     return ret;
 }
