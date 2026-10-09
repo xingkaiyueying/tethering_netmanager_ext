@@ -230,8 +230,7 @@
                 }
             ],
             "test": [
-                "//foundation/communication/netmanager_ext/test:netmanager_ext_test",
-                "//foundation/communication/netmanager_ext/test/mytest:sleip_netshare_stage3"
+                "//foundation/communication/netmanager_ext/test:netmanager_ext_test"
             ]
         }
     }

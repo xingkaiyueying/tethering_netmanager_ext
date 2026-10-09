@@ -1931,17 +1931,13 @@ void NearlinkIpShareController::Publish(NearlinkIpShareState state, const std::s
         ++status_.sequence;
         if (status_.role == NearlinkIpShareRole::GATEWAY) RefreshGatewayStatusLocked();
         snapshot = status_;
-        NETMGR_EXT_LOG_I("[NearlinkIpShare][Families] generation=%{public}llu sequence=%{public}llu netId=%{public}d "
-                         "ipv4=%{public}d validation4=%{public}d ipv6=%{public}d validation6=%{public}d",
-                         static_cast<unsigned long long>(status_.generation),
-                         static_cast<unsigned long long>(status_.sequence), status_.netId,
-                         status_.ipv4.configurationAvailable, status_.ipv4.validation,
-                         status_.ipv6.configurationAvailable, status_.ipv6.validation);
-        NETMGR_EXT_LOG_I("[NearlinkIpShare][State] role=%{public}d %{public}d->%{public}d peer=%{public}s "
-                         "errorStage=%{public}s code=%{public}d",
-                         static_cast<int32_t>(status_.role), static_cast<int32_t>(previous),
-                         static_cast<int32_t>(state), MaskPeer(status_.peerAddress).c_str(), errorStage.c_str(),
-                         errorCode);
+        if (previous != state) {
+            NETMGR_EXT_LOG_I("[NearlinkIpShare][State] role=%{public}d %{public}d->%{public}d peer=%{public}s "
+                             "errorStage=%{public}s code=%{public}d",
+                             static_cast<int32_t>(status_.role), static_cast<int32_t>(previous),
+                             static_cast<int32_t>(state), MaskPeer(status_.peerAddress).c_str(), errorStage.c_str(),
+                             errorCode);
+        }
     }
     NetworkShareTracker::GetInstance().SendNearlinkStateChange(snapshot);
 }

@@ -693,8 +693,6 @@ void NetworkShareTracker::SendNearlinkStateChange(const NearlinkIpShareStatus &s
         std::lock_guard<ffrt::mutex> lock(callbackMutex_);
         callbacks = nearlinkIpShareEventCallbacks_;
     }
-    NETMGR_EXT_LOG_I("[NearlinkIpShare][Event] role=%{public}d state=%{public}d listeners=%{public}zu",
-        static_cast<int32_t>(status.role), static_cast<int32_t>(status.state), callbacks.size());
     for (auto &callback : callbacks) {
         if (callback != nullptr) {
             callback->OnNearlinkIpShareStateChanged(status);
