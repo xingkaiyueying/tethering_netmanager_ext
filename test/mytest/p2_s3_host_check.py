@@ -291,6 +291,19 @@ int main() {
     errors.clear();c->StopTerminal();q.Drain();assert(c->status_.state==NearlinkIpShareState::IDLE);
     int32_t supported=0;assert(c->GetSupportedMaxTerminals(supported)==0 && supported==2);
     assert(c->StartGatewayAny(1,3)!=0);
+    auto &capacityClient=OHOS::Nearlink::NearlinkIpShareClient::GetInstance();
+    capacityClient.supportedMaxTerminals=32;
+    assert(c->GetSupportedMaxTerminals(supported)==0 && supported==32);
+    assert(c->StartGatewayAny(1,0)!=0 && c->StartGatewayAny(1,33)!=0);
+    for (int capacity : {1,2,3,5,7,32}) {
+        assert(c->StartGatewayAny(1,capacity)==0);q.Drain();
+        assert(c->status_.maxTerminals==capacity && c->status_.supportedMaxTerminals==32 &&
+               capacityClient.gatewayCapacity==capacity);
+        assert(c->StartGatewayAny(1,capacity==32 ? 31 : capacity+1)!=0); // running limit stays fixed
+        assert(c->StopGateway()==0);q.Drain();
+        assert(c->status_.state==NearlinkIpShareState::IDLE);
+    }
+    capacityClient.supportedMaxTerminals=2; // retain compatibility coverage for older NearLink services
     q.delayed.clear(); // Discard previous terminal sessions' maintenance ticks.
     c->configuration_.pool4="172.24.0.0/24";
     assert(c->StartGatewayAny(3,2)!=0); // preflight pool insufficient for capacity
