@@ -101,5 +101,5 @@ int main(){
 ''')
     exe = out / 'test.exe'
     subprocess.run(['g++', '-std=c++17', f'-I{out}', f'-I{src / "include"}',
-                    str(out / 'test.cpp'), '-o', str(exe)], check=True)
+                    str(out / 'test.cpp'), '-o', str(exe), '-lws2_32'], check=True)
     subprocess.run([str(exe)], cwd=out, check=True)

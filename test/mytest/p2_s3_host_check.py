@@ -77,7 +77,27 @@ bool Cleanup(){return call("ipv6-cleanup")==0;}
         payload = subprocess.check_output(['git', '-c', f'safe.directory={repo.as_posix()}',
             '-C', str(repo), 'show', prefix_before + ':services/networksharemanager/src/nearlink_peer_upstream.cpp'])
         (out / 'nearlink_peer_upstream.cpp').write_bytes(payload)
-    put('nearlink_family_validation.h', '#pragma once\nnamespace OHOS::NetManagerStandard { struct NearlinkFamilyValidation { int ipv4=0,ipv6=0; }; inline NearlinkFamilyValidation ValidateNearlinkFamilies(int,bool,bool) {return {};} }\n')
+    validation_before = os.environ.get('P3_VALIDATION_BEFORE_REF')
+    if validation_before:
+        for name in ('include/nearlink_ipshare_controller.h', 'src/nearlink_ipshare_controller.cpp'):
+            payload = subprocess.check_output(['git', '-c', f'safe.directory={repo.as_posix()}',
+                '-C', str(repo), 'show', validation_before + ':services/networksharemanager/' + name])
+            (out / Path(name).name).write_bytes(payload)
+    # Control detached probe completion order while executing the production controller.
+    controller = (out / 'nearlink_ipshare_controller.cpp').read_text()
+    (out / 'nearlink_ipshare_controller.cpp').write_text(controller.replace('std::thread([', 'ProbeThread(['))
+    put('nearlink_family_validation.h', '''#pragma once
+#include <functional>
+#include <deque>
+inline std::deque<std::function<void()>> probeThreads;
+struct ProbeThread {template<class F> ProbeThread(F f){probeThreads.push_back(f);} void detach() {}};
+namespace OHOS::NetManagerStandard {
+struct NearlinkFamilyValidation { int ipv4=0,ipv6=0; };
+inline int probe4=2,probe6=3;
+inline NearlinkFamilyValidation ValidateNearlinkFamilies(int,bool v4,bool v6) {
+    return {v4 ? probe4 : 0, v6 ? probe6 : 0};
+} }
+''')
     put('dhcp_c_api.h', '''#pragma once
 #include "mock.h"
 #include "dhcp_result_event.h"
@@ -141,6 +161,42 @@ int main() {
     c->OnDhcpSuccess(0,"sleip0",v4); q.Drain();
     assert(net.lastLink.netAddrList_.size()==2 && net.lastLink.routeList_.size()==4);
     assert(c->netSupplierId_==supplier && net.registrations==1);
+    // A slow/stale IPv6 probe cannot clear or delay an unchanged IPv4 result.
+    c->ValidateFamilies();assert(probeThreads.size()==2);
+    auto complete4=probeThreads.front();probeThreads.pop_front();
+    complete4();q.Drain();
+    assert(c->status_.ipv4.validation==2 && c->status_.ipv4.externalAvailable);
+    assert(c->status_.ipv6.validation==1);
+    strcpy(v6.dnsList.dnsAddr[0],"fd77:77:1::54");
+    c->OnDhcpSuccess(0,"sleip0",v6);q.Drain();
+    assert(c->status_.ipv4.validation==2 && c->status_.ipv4.externalAvailable);
+    auto stale6=probeThreads.front();probeThreads.pop_front();stale6();q.Drain();
+    assert(c->status_.ipv6.validation==0 && c->status_.ipv4.validation==2);
+    c->ValidateFamilies();assert(probeThreads.size()==1);
+    auto complete6=probeThreads.front();probeThreads.pop_front();complete6();q.Drain();
+    assert(c->status_.ipv6.validation==3 && !c->status_.ipv6.externalAvailable);
+    assert(c->status_.ipv4.validation==2 && c->status_.ipv4.externalAvailable);
+    // A genuine fresh IPv4 failure must still replace PASS after its own DNS changes.
+    probe4=3;strcpy(v4.strOptDns1,"192.168.77.53");
+    c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();c->ValidateFamilies();
+    assert(probeThreads.size()==1);
+    complete4=probeThreads.front();probeThreads.pop_front();complete4();q.Drain();
+    assert(c->status_.ipv4.validation==3 && !c->status_.ipv4.externalAvailable);
+    assert(c->status_.ipv6.validation==3);
+    // Network identity changes invalidate both families even with identical link properties.
+    net.terminalNetId=43;assert(c->PublishTerminalNetwork());
+    assert(c->status_.netId==43 && c->status_.ipv4.validation==0 && c->status_.ipv6.validation==0);
+    errors["netid-lookup"]=-7;assert(c->PublishTerminalNetwork());assert(c->status_.netId==-1);
+    net.terminalNetId=42;errors.clear();c->ValidateFamilies();
+    assert(c->status_.netId==42 && probeThreads.size()==2);
+    complete4=probeThreads.front();probeThreads.pop_front();complete4();q.Drain();
+    complete6=probeThreads.front();probeThreads.pop_front();complete6();q.Drain();
+    strcpy(v4.strOptDns1,"192.168.77.1");probe4=2;
+    c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();c->ValidateFamilies();
+    assert(probeThreads.size()==1);
+    // A stopped session cannot publish a late PASS into the next session.
+    auto late4=probeThreads.front();probeThreads.pop_front();
+    puts("per-family validation: independent completion, IPv6 changes retain IPv4 PASS, stale family/session rejection, genuine failure retained PASS");
     { Parcel parcel; assert(c->status_.Marshalling(parcel)); }
     c->OnDhcpFailure(4,"sleip0","renew"); q.Drain();
     assert(net.lastLink.netAddrList_.size()==2);
@@ -169,6 +225,7 @@ int main() {
     assert(net.lastLink.netAddrList_[0].address_=="192.168.77.3");
     c->OnDhcpSuccess(0,"sleip0",v4); c->StopTerminal(); q.Drain();
     assert(c->status_.state==NearlinkIpShareState::IDLE && !c->nearlinkStarted_);
+    late4();q.Drain();assert(c->status_.ipv4.validation==0 && !c->status_.ipv4.externalAvailable);
     c->OnDhcpSuccess(0,"sleip0",v4); q.Drain();
     assert(c->netSupplierId_==0);
     errors["link-info"]=-7;

@@ -4,6 +4,7 @@
 #include "netmgr_ext_log_wrapper.h"
 #include <arpa/inet.h>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
@@ -54,6 +55,17 @@ bool Http204(int32_t netId, const addrinfo &address, const std::string &host, co
 {
     int fd = socket(address.ai_family, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return ProbeFailure(netId, address.ai_family, "SOCKET", errno);
+    auto started = std::chrono::steady_clock::now();
+    auto addressText = [](const sockaddr *socketAddress, char *text, size_t length) {
+        if (socketAddress == nullptr) return;
+        if (socketAddress->sa_family == AF_INET) {
+            (void)inet_ntop(AF_INET, &reinterpret_cast<const sockaddr_in *>(socketAddress)->sin_addr, text, length);
+        } else if (socketAddress->sa_family == AF_INET6) {
+            (void)inet_ntop(AF_INET6, &reinterpret_cast<const sockaddr_in6 *>(socketAddress)->sin6_addr, text, length);
+        }
+    };
+    char remote[INET6_ADDRSTRLEN]{}, local[INET6_ADDRSTRLEN]{};
+    addressText(address.ai_addr, remote, sizeof(remote));
     auto check = [&]() {
         int32_t bindRet = NetConnClient::GetInstance().BindSocket(fd, netId);
         if (bindRet != 0) return ProbeFailure(netId, address.ai_family, "BIND", bindRet);
@@ -91,7 +103,19 @@ bool Http204(int32_t netId, const addrinfo &address, const std::string &host, co
         }
         return ProbeFailure(netId, address.ai_family, "HTTP_HEADER", EMSGSIZE);
     };
-    bool success = check(); close(fd); return success;
+    bool success = check();
+    sockaddr_storage source{};
+    socklen_t sourceLength = sizeof(source);
+    if (getsockname(fd, reinterpret_cast<sockaddr *>(&source), &sourceLength) == 0) {
+        addressText(reinterpret_cast<const sockaddr *>(&source), local, sizeof(local));
+    }
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][ProbeSocket] netId=%{public}d family=%{public}d "
+                     "remote=%{public}s local=%{public}s success=%{public}d elapsedMs=%{public}lld",
+                     netId, address.ai_family, remote, local, success, static_cast<long long>(elapsed));
+    close(fd);
+    return success;
 }
 bool CheckFamily(int32_t netId, int family, const std::string &host, const std::string &port,
     const std::string &path, const std::string &authority)

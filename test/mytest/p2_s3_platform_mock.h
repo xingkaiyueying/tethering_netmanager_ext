@@ -91,7 +91,11 @@ public:
     NetLinkInfo lastLink;
     int registrations=0;
     static NetConnClient &GetInstance() { static NetConnClient n; return n; }
-    int GetNetIdByIdentifier(const char*,std::list<int32_t> &ids) {ids={42}; return 0;}
+    int terminalNetId=42;
+    int GetNetIdByIdentifier(const char*,std::list<int32_t> &ids) {
+        if(errors["netid-lookup"]) return errors["netid-lookup"];
+        ids={terminalNetId}; return 0;
+    }
     int netId=10;NetLinkInfo upstreamProperties;
     int GetDefaultNet(NetHandle &n) { n.id=netId;return hasDefault ? 0 : -1; }
     int GetConnectionProperties(const NetHandle &, NetLinkInfo &l) { l=upstreamProperties;l.ifaceName_=iface; return 0; }

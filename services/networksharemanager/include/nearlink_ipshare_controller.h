@@ -111,9 +111,13 @@ private:
     void ScheduleMaintenance(uint64_t generation);
     void RefreshFamilyStatus();
     void ValidateFamilies();
-    uint64_t networkRevision_{0};
-    bool validationInFlight_{false};
-    std::chrono::steady_clock::time_point nextValidation_{};
+    struct FamilyValidationState {
+        uint64_t revision{0};
+        bool inFlight{false};
+        std::chrono::steady_clock::time_point next{};
+    };
+    std::array<FamilyValidationState, 2> validation_{};
+    std::array<NetLinkInfo, 2> appliedFamilies_{};
     bool Cleanup(bool publishIdle = true, bool deferFailure = false);
     void Fail(const std::string &stage, int32_t code);
     void Publish(NearlinkIpShareState state, const std::string &errorStage = {}, int32_t errorCode = 0);

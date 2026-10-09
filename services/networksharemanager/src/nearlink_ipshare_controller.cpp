@@ -1255,13 +1255,21 @@ bool NearlinkIpShareController::PublishTerminalNetwork()
     if (!link || !supplier) {
         return false;
     }
+    std::list<int32_t> ids;
+    int32_t netId = -1;
+    if (NetConnClient::GetInstance().GetNetIdByIdentifier(IFACE_NAME, ids) == NETMANAGER_SUCCESS && ids.size() == 1) {
+        netId = ids.front();
+    }
     // Supplier availability tracks the live shared interface, not an individual DHCP/DNS result.
     // Dropping it for a DNS timeout would destroy the network and its other kernel-managed addresses.
     supplier->isAvailable_ = true;
     supplier->score_ = NETWORK_SCORE;
     if (!dirty && !created && supplierAvailable_ == supplier->isAvailable_ && appliedLink_ == *link) {
-        networkDirty_ = false;
-        return true;
+        std::lock_guard lock(mutex_);
+        if (netId >= 0 && status_.netId == netId) {
+            networkDirty_ = false;
+            return true;
+        }
     }
     // NetConn creates the physical network when supplier availability becomes true.
     // Install link resources only after that step; on failure restore the previous aggregate.
@@ -1294,19 +1302,33 @@ bool NearlinkIpShareController::PublishTerminalNetwork()
     }
     networkDirty_ = false;
     appliedLink_ = *link;
-    ++networkRevision_;
-    nextValidation_ = std::chrono::steady_clock::time_point{};
+    // Availability publication can create the network, so resolve its identity again after committing.
+    ids.clear();
+    netId = -1;
+    if (NetConnClient::GetInstance().GetNetIdByIdentifier(IFACE_NAME, ids) == NETMANAGER_SUCCESS && ids.size() == 1) {
+        netId = ids.front();
+    }
     {
         std::lock_guard lock(mutex_);
-        status_.ipv4.externalAvailable = status_.ipv6.externalAvailable = false;
-        status_.ipv4.validation = status_.ipv6.validation = 0;
+        const std::array<NetLinkInfo, 2> links{families_.ipv4, families_.ipv6};
+        const bool networkChanged = status_.netId != netId;
+        status_.netId = netId;
+        for (size_t i = 0; i < links.size(); ++i) {
+            if (networkChanged || !(appliedFamilies_[i] == links[i])) {
+                ++validation_[i].revision;
+                validation_[i].next = {};
+                auto &family = i == 0 ? status_.ipv4 : status_.ipv6;
+                family.externalAvailable = false;
+                family.validation = 0;
+                NETMGR_EXT_LOG_I("[NearlinkIpShare][ProbeRevision] netId=%{public}d family=%{public}d "
+                                 "revision=%{public}llu networkChanged=%{public}d",
+                                 netId, i == 0 ? 4 : 6,
+                                 static_cast<unsigned long long>(validation_[i].revision), networkChanged);
+            }
+        }
+        appliedFamilies_ = links;
     }
     supplierAvailable_ = supplier->isAvailable_;
-    std::list<int32_t> ids;
-    if (NetConnClient::GetInstance().GetNetIdByIdentifier(IFACE_NAME, ids) == NETMANAGER_SUCCESS && ids.size() == 1) {
-        std::lock_guard lock(mutex_);
-        status_.netId = ids.front();
-    }
     return true;
 }
 
@@ -1573,54 +1595,64 @@ void NearlinkIpShareController::RefreshFamilyStatus()
 
 void NearlinkIpShareController::ValidateFamilies()
 {
-    auto now = std::chrono::steady_clock::now();
-    if (validationInFlight_ || now < nextValidation_) {
-        return;
-    }
-    int32_t netId;
-    bool ipv4, ipv6;
+    bool queryPending;
     {
         std::lock_guard lock(mutex_);
-        netId = status_.netId;
-        ipv4 = status_.ipv4.configurationAvailable;
-        ipv6 = status_.ipv6.configurationAvailable;
-        if (netId < 0 || (!ipv4 && !ipv6)) {
-            return;
-        }
-        if (ipv4) {
-            status_.ipv4.validation = 1;
-        }
-        if (ipv6) {
-            status_.ipv6.validation = 1;
-        }
+        queryPending = status_.netId < 0;
     }
-    validationInFlight_ = true;
-    nextValidation_ = now + std::chrono::seconds(30);
+    // A temporarily missing network identity must be retried on the maintenance tick,
+    // even when neither family's link resources change again.
+    if (queryPending && netSupplierId_ != 0 && PublishTerminalNetwork()) {
+        RefreshFamilyStatus();
+    }
+    auto now = std::chrono::steady_clock::now();
     auto self = shared_from_this();
-    // DNS/HTTP must never block the shared lifecycle worker or delay stop.
-    std::thread([self, netId, ipv4, ipv6, generation = generation_.load(), revision = networkRevision_]() {
-        auto result = ValidateNearlinkFamilies(netId, ipv4, ipv6);
-        NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, result, generation, revision]() {
-            if (!self->IsCurrentSession(generation)) {
-                return;
+    for (size_t i = 0; i < validation_.size(); ++i) {
+        auto &probe = validation_[i];
+        if (probe.inFlight || now < probe.next) {
+            continue;
+        }
+        int32_t netId;
+        const bool ipv6 = i == 1;
+        {
+            std::lock_guard lock(mutex_);
+            netId = status_.netId;
+            auto &family = ipv6 ? status_.ipv6 : status_.ipv4;
+            if (netId < 0 || !family.configurationAvailable) {
+                continue;
             }
-            self->validationInFlight_ = false;
-            if (revision != self->networkRevision_) {
-                return;
-            }
-            {
-                std::lock_guard lock(self->mutex_);
-                self->status_.ipv4.validation = result.ipv4;
-                self->status_.ipv6.validation = result.ipv6;
-                self->status_.ipv4.externalAvailable = result.ipv4 == 2 && self->status_.ipv4.configurationAvailable;
-                self->status_.ipv6.externalAvailable = result.ipv6 == 2 && self->status_.ipv6.configurationAvailable;
-            }
-            // Failed startup probes retry promptly without recreating the network or either family.
-            self->nextValidation_ = std::chrono::steady_clock::now() +
-                                    std::chrono::seconds(result.ipv4 == 3 || result.ipv6 == 3 ? 5 : 30);
-            self->RefreshFamilyStatus();
-        });
-    }).detach();
+            family.validation = 1;
+        }
+        probe.inFlight = true;
+        probe.next = now + std::chrono::seconds(30);
+        // One bounded in-flight probe per family; slow DNS/HTTP cannot delay the other family or stop.
+        std::thread([self, netId, ipv6, i, generation = generation_.load(), revision = probe.revision]() {
+            auto result = ValidateNearlinkFamilies(netId, !ipv6, ipv6);
+            const int32_t value = ipv6 ? result.ipv6 : result.ipv4;
+            NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, value, generation, revision, i, ipv6]() {
+                if (!self->IsCurrentSession(generation)) {
+                    return;
+                }
+                auto &current = self->validation_[i];
+                current.inFlight = false;
+                if (revision != current.revision) {
+                    NETMGR_EXT_LOG_I("[NearlinkIpShare][ProbeStale] family=%{public}d "
+                                     "revision=%{public}llu current=%{public}llu",
+                                     ipv6 ? 6 : 4, static_cast<unsigned long long>(revision),
+                                     static_cast<unsigned long long>(current.revision));
+                    return;
+                }
+                {
+                    std::lock_guard lock(self->mutex_);
+                    auto &family = ipv6 ? self->status_.ipv6 : self->status_.ipv4;
+                    family.validation = family.configurationAvailable ? value : 0;
+                    family.externalAvailable = value == 2 && family.configurationAvailable;
+                }
+                current.next = std::chrono::steady_clock::now() + std::chrono::seconds(value == 3 ? 5 : 30);
+                self->RefreshFamilyStatus();
+            });
+        }).detach();
+    }
 }
 
 void NearlinkIpShareController::ScheduleMaintenance(uint64_t generation)
@@ -1767,8 +1799,12 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle, bool deferFailure)
     ipv6GatewayPendingSince_ = {};
     maintenancePending_ = false;
     gatewayIfaceMissingSince_ = {};
-    ++networkRevision_;
-    validationInFlight_ = false;
+    for (auto &probe : validation_) {
+        ++probe.revision;
+        probe.inFlight = false;
+        probe.next = {};
+    }
+    appliedFamilies_ = {};
     if (dnsProxyStarted_ && result("DNS proxy", NetsysController::GetInstance().StopDnsProxyListen())) {
         dnsProxyStarted_ = false;
     }
