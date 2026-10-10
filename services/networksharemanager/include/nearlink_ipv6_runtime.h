@@ -33,6 +33,7 @@ public:
       configuredPrefix_ = prefix;
   }
   static std::string DeriveGatewayPrefix(const NetLinkInfo *upstream, uint32_t slot);
+  static bool HasDefaultRouteOnInterface(const std::string &iface, int32_t family);
   bool HasDefaultRouter() const
   {
       return lastRouterLifetime_ > 0;

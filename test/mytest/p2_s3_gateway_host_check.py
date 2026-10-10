@@ -87,8 +87,10 @@ bool NearlinkIpv6Runtime::AddAddress(const std::string &a){addresses_.push_back(
 namespace {
 ''' + prefix + r'''
 std::string routedInterface;
+int routeQueries=0;
 bool HasIpv6DefaultRouteOnInterface(const std::string &iface)
 {
+    ++routeQueries;
     return iface == routedInterface;
 }
 ''' + advertise + r'''
@@ -104,6 +106,11 @@ void kernelAddress(const std::string &address, unsigned flags, const std::string
 int main(){
  NearlinkIpv6Runtime runtime;runtime.ifindex_=7;runtime.layer2_="02:11:22:33:44:55";
  assert(!runtime.Advertise(nullptr,false));
+ NetLinkInfo linkLocal;linkLocal.ifaceName_="rmnet0";
+ linkLocal.netAddrList_.push_back({AF_INET6,64,"fe80::1234"});
+ {std::ofstream f("if_inet6_upstream.txt");}
+ assert(!runtime.Advertise(&linkLocal,true));assert(routeQueries==0);
+ assert(runtime.prefix_.empty() && !runtime.HasDefaultRouter());
  NetLinkInfo up;up.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:20::1234"});
  assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up,0)=="2001:db8:10:21::");
  assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up,1)=="2001:db8:10:22::");

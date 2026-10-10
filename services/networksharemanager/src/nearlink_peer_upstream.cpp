@@ -59,8 +59,16 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
         present && std::any_of(upstream->routeList_.begin(), upstream->routeList_.end(), [](const auto &route) {
             return route.destination_.family_ == AF_INET && route.destination_.prefixlen_ == 0;
         });
+    // Cellular properties can omit an installed policy-table default, as for IPv6.
+    // Confirm only the selected interface; NAT success alone is not route evidence.
+    if (present && !hasV4)
+        hasV4 = NearlinkIpv6Runtime::HasDefaultRouteOnInterface(upstreamIface_, AF_INET);
     bool anyForward = false;
     for (auto &[slot, peer] : addressPeers_) {
+        {
+            std::lock_guard lock(mutex_);
+            if (stopRequested_ || shuttingDown_) return;
+        }
         if (peer.releasing) {
             CleanupGatewayPeerUpstream(peer);
             continue;

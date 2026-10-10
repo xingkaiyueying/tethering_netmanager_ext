@@ -45,6 +45,8 @@ class NearlinkIpv6Runtime { public:
 bool Prepare(bool,const std::string&,const std::string& = "sleip0",const std::string& = ""){return call("ipv6-prepare")==0;}
 std::string prefix;bool routed=false;
 inline static unsigned upstreamEpoch=0;
+inline static bool kernelV4Default=false;
+static bool HasDefaultRouteOnInterface(const std::string &iface,int family){return family==AF_INET && kernelV4Default && iface=="rmnet0";}
 bool HasPrefix()const{return !prefix.empty();}
 const std::string &CurrentPrefix()const{return prefix;}
 const std::string &Gateway()const{static std::string address="2001:db8::1";return address;}
@@ -419,6 +421,10 @@ int main() {
     // Losing only IPv4 default removes NAT but retains independently routed IPv6.
     net.upstreamProperties.routeList_.clear();c->ConfigureUpstream();
     assert(c->addressPeers_[0].natEnabled && c->addressPeers_[0].ipv6Routed);
+    assert(c->status_.ipv4.hasError);
+    NearlinkIpv6Runtime::kernelV4Default=true;c->ConfigureUpstream();
+    assert(!c->status_.ipv4.hasError && c->status_.ipv4.configurationAvailable);
+    NearlinkIpv6Runtime::kernelV4Default=false;
     net.upstreamProperties.routeList_={def4};c->ConfigureUpstream();
     // Whole upstream loss retains both local families and G global listener/forwarding ownership.
     const auto prefix0=c->addressPeers_[0].ipv6.prefix;

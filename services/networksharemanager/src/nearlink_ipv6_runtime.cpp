@@ -15,6 +15,7 @@
 #include "nearlink_ipv6_runtime.h"
 #include <net/if.h>
 #include "netsys_controller.h"
+#include "netmgr_ext_log_wrapper.h"
 #include <arpa/inet.h>
 #include <algorithm>
 #include <array>
@@ -26,6 +27,7 @@
 #include <linux/if_link.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -301,18 +303,19 @@ bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2, const
     prepared_ = AddAddress(gateway ? "fe80::1" : "fe80::2");
     return prepared_;
 }
-bool HasIpv6DefaultRouteOnInterface(const std::string &iface)
+bool NearlinkIpv6Runtime::HasDefaultRouteOnInterface(const std::string &iface, int32_t family)
 {
     unsigned index = if_nametoindex(iface.c_str());
-    if (index == 0) {
+    if (index == 0 || (family != AF_INET && family != AF_INET6)) {
         return false;
     }
-    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, NETLINK_ROUTE);
     if (fd < 0) {
         return false;
     }
-    timeval timeout{1, 0};
-    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    // This runs on the serialized sharing worker. Neither a failed socket timeout
+    // nor an incomplete/continuous dump may hold up peer release and StopGateway.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     struct {
         nlmsghdr header;
         rtmsg route;
@@ -321,7 +324,7 @@ bool HasIpv6DefaultRouteOnInterface(const std::string &iface)
     request.header.nlmsg_type = RTM_GETROUTE;
     request.header.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
     request.header.nlmsg_seq = 1;
-    request.route.rtm_family = AF_INET6;
+    request.route.rtm_family = family;
     sockaddr_nl kernel{};
     kernel.nl_family = AF_NETLINK;
     bool sent = sendto(fd, &request, request.header.nlmsg_len, 0, reinterpret_cast<sockaddr *>(&kernel),
@@ -329,14 +332,23 @@ bool HasIpv6DefaultRouteOnInterface(const std::string &iface)
     bool found = false;
     bool done = false;
     while (sent && !done) {
+        auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        if (left <= 0) break;
+        pollfd event{fd, POLLIN, 0};
+        int ready = poll(&event, 1, static_cast<int>(left));
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready <= 0 || !(event.revents & POLLIN)) break;
         alignas(nlmsghdr) char reply[8192]{};
-        ssize_t size = recv(fd, reply, sizeof(reply), 0);
+        ssize_t size = recv(fd, reply, sizeof(reply), MSG_DONTWAIT);
+        if (size < 0 && (errno == EAGAIN || errno == EINTR)) continue;
         if (size <= 0) {
             break;
         }
         int remaining = static_cast<int>(size);
         for (auto *header = reinterpret_cast<nlmsghdr *>(reply); NLMSG_OK(header, remaining);
              header = NLMSG_NEXT(header, remaining)) {
+            if (header->nlmsg_seq != request.header.nlmsg_seq) continue;
             if (header->nlmsg_type == NLMSG_DONE || header->nlmsg_type == NLMSG_ERROR) {
                 done = true;
                 break;
@@ -345,7 +357,7 @@ bool HasIpv6DefaultRouteOnInterface(const std::string &iface)
                 continue;
             }
             auto *route = reinterpret_cast<rtmsg *>(NLMSG_DATA(header));
-            if (route->rtm_family != AF_INET6 || route->rtm_dst_len != 0 || route->rtm_src_len != 0 ||
+            if (route->rtm_family != family || route->rtm_dst_len != 0 || route->rtm_src_len != 0 ||
                 route->rtm_type != RTN_UNICAST) {
                 continue;
             }
@@ -367,7 +379,15 @@ bool HasIpv6DefaultRouteOnInterface(const std::string &iface)
         }
     }
     close(fd);
+    if (sent && !done) {
+        NETMGR_EXT_LOG_W("[NearlinkIpShare][RouteQuery] iface=%{public}s family=%{public}d "
+                        "dump incomplete; default unavailable within deadline", iface.c_str(), family);
+    }
     return found;
+}
+bool HasIpv6DefaultRouteOnInterface(const std::string &iface)
+{
+    return NearlinkIpv6Runtime::HasDefaultRouteOnInterface(iface, AF_INET6);
 }
 bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding, bool dnsReady)
 {
@@ -388,7 +408,7 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
         }
     }
     bool defaultRoute = false;
-    if (upstream != nullptr) {
+    if (configured && forwarding && upstream != nullptr) {
         for (const auto &r : upstream->routeList_) {
             defaultRoute = defaultRoute || (r.destination_.family_ == AF_INET6 && r.destination_.prefixlen_ == 0);
         }
