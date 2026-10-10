@@ -1,5 +1,9 @@
-"""Run actual RA assembly methods. Socket, FFRT and product integration are not covered."""
+"""Run RA assembly and compile actual RA with distinct std/FFRT mutex types.
+
+OS and FFRT runtime integration remain stubbed; the FFRT mutex is not a std alias.
+"""
 from pathlib import Path
+import os
 import subprocess
 import tempfile
 
@@ -29,6 +33,9 @@ inline int memset_s(void*d,size_t n,int c,size_t k){if(k>n)return -1;memset(d,c,
 namespace ffrt { using shared_mutex=std::shared_mutex; struct queue {}; using task_handle=void*; }
 ''')
     production = (src / 'src/router_advertisement_daemon.cpp').read_text(encoding='utf-8')
+    if os.environ.get('P3_RA_MUTEX_BEFORE_REF'):
+        production = subprocess.check_output(['git', '-c', 'safe.directory='+repo.as_posix(), '-C', str(repo),
+            'show', os.environ['P3_RA_MUTEX_BEFORE_REF']+':services/networksharemanager/src/router_advertisement_daemon.cpp']).decode()
     methods = production[production.index('bool RouterAdvertisementDaemon::AssembleRaLocked()'):]
     params = (src / 'src/router_advertisement_params.cpp').read_text(encoding='utf-8')
     put('test.cpp', '''#include <memory>
@@ -137,6 +144,30 @@ ssize_t recvmsg(int,msghdr*,int);
     assert 'owner.KeepAddresses();' in fixture_text
     assert 'gateway_retained_until_interface_cleanup=1' in fixture_text
     assert 'first_source_confirmation=REQUIRED_WITHIN_60S' in fixture_text
-    for source in (src/'src/router_advertisement_daemon.cpp', fixture):
+    put('router_advertisement_daemon.cpp', production)
+    for source in (out/'router_advertisement_daemon.cpp', fixture):
         subprocess.run(['g++','-std=c++17','-include','memory','-fsyntax-only','-I'+str(out),str(source)],check=True)
-    print('RA daemon and native IPv6 fixture syntax/retained-address policy=PASS (OS/FFRT boundary stubbed)')
+    print('RA daemon with std::mutex and native IPv6 fixture syntax/retained-address policy=PASS')
+    # The reported product header uses ffrt::mutex. Compile the entire same production
+    # translation unit against that member type, without a conversion to std::mutex.
+    header = (out/'router_advertisement_daemon.h').read_text(encoding='utf-8')
+    assert header.count('std::mutex mutex_;') == 1
+    put('router_advertisement_daemon.h', header.replace('std::mutex mutex_;', 'ffrt::mutex mutex_;'))
+    with (out/'ffrt_timer.h').open('a', encoding='utf-8') as file:
+        file.write('''
+#include <mutex>
+#include <type_traits>
+namespace ffrt {
+class mutex {
+public:
+    void lock() { native_.lock(); }
+    void unlock() { native_.unlock(); }
+private:
+    std::mutex native_;
+};
+}
+static_assert(!std::is_convertible<ffrt::mutex&, std::mutex&>::value, "FFRT must be a distinct type");
+''')
+    subprocess.run(['g++','-std=c++17','-include','memory','-fsyntax-only','-I'+str(out),
+                    str(out/'router_advertisement_daemon.cpp')],check=True)
+    print('RA daemon with distinct ffrt::mutex: all production lock sites compile=PASS (OS/FFRT runtime stubbed)')

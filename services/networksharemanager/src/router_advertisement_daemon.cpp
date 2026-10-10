@@ -224,7 +224,7 @@ bool RouterAdvertisementDaemon::MaybeSendRa(sockaddr_in6 &dest)
 
 void RouterAdvertisementDaemon::ProcessSendRaPacket()
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<decltype(mutex_)> lock(mutex_);
     if (!IsSocketValid() || stopRaThread_) {
         NETMGR_EXT_LOG_E("socket closed or stopRaThread!");
         return;
@@ -299,7 +299,7 @@ void RouterAdvertisementDaemon::RunRecvRsThread()
                 continue;
             }
         }
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         if (layer3) {
             if (IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr)) {
                 solicitor = dstIpv6Addr_;
@@ -310,7 +310,7 @@ void RouterAdvertisementDaemon::RunRecvRsThread()
             MaybeSendRa(solicitor);
         }
     }
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<decltype(mutex_)> lock(mutex_);
     CloseRaSocket();
 }
 
@@ -332,13 +332,13 @@ RaParams RouterAdvertisementDaemon::GetDeprecatedRaParams(RaParams &oldRa, RaPar
 
 void RouterAdvertisementDaemon::BuildNewRa(const RaParams &newRa)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<decltype(mutex_)> lock(mutex_);
     raParams_->Set(newRa);
 }
 
 bool RouterAdvertisementDaemon::AdvertiseNow()
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<decltype(mutex_)> lock(mutex_);
     return IsSocketValid() && !stopRaThread_ && AssembleRaLocked() && MaybeSendRa(dstIpv6Addr_);
 }
 
