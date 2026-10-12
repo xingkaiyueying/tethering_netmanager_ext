@@ -61,6 +61,11 @@ bool Cleanup(){return call("ipv6-cleanup")==0;}
     # Copy only the controller header so the platform runtime double is selected explicitly.
     put('nearlink_ipshare_controller.h', (source / 'include/nearlink_ipshare_controller.h').read_text())
     put('nearlink_ipshare_controller.cpp', (source / 'src/nearlink_ipshare_controller.cpp').read_text())
+    stop_before = os.environ.get('P3_LOWER_STOP_BEFORE_REF')
+    if stop_before:
+        payload = subprocess.check_output(['git', '-c', f'safe.directory={repo.as_posix()}', '-C', str(repo),
+            'show', stop_before + ':services/networksharemanager/src/nearlink_ipshare_controller.cpp'])
+        (out / 'nearlink_ipshare_controller.cpp').write_bytes(payload)
     put('nearlink_peer_address.cpp', (source / 'src/nearlink_peer_address.cpp').read_text())
     before_ref = os.environ.get('P3_SWITCH_BEFORE_REF')
     upstream_source = (source / 'src/nearlink_peer_upstream.cpp').read_text()
@@ -501,10 +506,24 @@ int main() {
     // A successful Stop IPC is not proof that the lower TUN/channels have drained.
     activeGateway();auto &lower=OHOS::Nearlink::NearlinkIpShareClient::GetInstance();lower.drainOnStop=false;
     assert(c->StopGateway()==0);q.Drain();
-    assert(c->status_.state==NearlinkIpShareState::STOPPING && c->gatewayReserved_ && !c->nearlinkStarted_);
+    assert(c->status_.state==NearlinkIpShareState::STOPPING && c->gatewayReserved_ && c->nearlinkStarted_);
     lower.snapshot.role=NearlinkIpShareRole::NONE;lower.snapshot.state=NearlinkIpShareState::IDLE;
     retryStop();assert(c->status_.state==NearlinkIpShareState::IDLE && !c->gatewayReserved_);
     lower.drainOnStop=true;
+    // A transient lower destroy/post failure requires another Stop, not just polling.
+    activeGateway();lower.drainOnStop=false;calls.clear();
+    assert(c->StopGateway()==0);q.Drain();
+    assert(c->nearlinkStarted_ && std::count(calls.begin(),calls.end(),"nearlink-stop")==1);
+    lower.drainOnStop=true;retryStop();
+    assert(c->status_.state==NearlinkIpShareState::IDLE && !c->nearlinkStarted_ && !c->gatewayReserved_);
+    assert(std::count(calls.begin(),calls.end(),"nearlink-stop")==2);
+    // Persistent lower failure keeps ownership; a later user retry can recover.
+    activeGateway();lower.drainOnStop=false;calls.clear();
+    assert(c->StopGateway()==0);q.Drain();retryStop();retryStop();retryStop();
+    assert(c->status_.state==NearlinkIpShareState::ERROR && c->nearlinkStarted_ && c->gatewayReserved_);
+    assert(std::count(calls.begin(),calls.end(),"nearlink-stop")==4);
+    lower.drainOnStop=true;assert(c->StopGateway()==0);q.Drain();
+    assert(c->status_.state==NearlinkIpShareState::IDLE && !c->nearlinkStarted_ && !c->gatewayReserved_);
     // Persistent resource failure remains ERROR/owned after the bounded retries.
     activeGateway();errors["ipv6-cleanup"]=-EACCES;
     assert(c->StopGateway()==0);q.Drain();retryStop();retryStop();retryStop();
@@ -531,6 +550,13 @@ int main() {
     assert(c->status_.state==NearlinkIpShareState::STOPPING && c->stopRequested_);
     lower.snapshot.role=NearlinkIpShareRole::NONE;lower.snapshot.state=NearlinkIpShareState::IDLE;
     retryStop();assert(c->status_.state==NearlinkIpShareState::IDLE);lower.drainOnStop=true;
+    assert(c->StartTerminal(peer,3)==0);q.Drain();
+    lower.snapshot.role=NearlinkIpShareRole::TERMINAL;
+    lower.snapshot.state=NearlinkIpShareState::CHANNEL_READY;lower.drainOnStop=false;calls.clear();
+    assert(c->StopTerminal()==0);q.Drain();assert(c->nearlinkStarted_);
+    lower.drainOnStop=true;retryStop();
+    assert(c->status_.state==NearlinkIpShareState::IDLE && !c->nearlinkStarted_);
+    assert(std::count(calls.begin(),calls.end(),"nearlink-stop")==2);
     // Only locally observed STOPPING causes a bounded startup wait.
     auto startupBusy=[&](uint64_t gen) {
         OHOS::Nearlink::NearlinkIpShareStatus busy;

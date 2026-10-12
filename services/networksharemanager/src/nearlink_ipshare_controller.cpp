@@ -1850,15 +1850,26 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle, bool deferFailure)
     }
     // Always close the channel after DHCP stop/failure: this revokes the IPv4
     // gate even when DHCP cleanup fails. Retain failed resource ownership.
-    if (nearlinkStarted_ && result("NearLink", OHOS::Nearlink::NearlinkIpShareClient::GetInstance().Stop())) {
-        nearlinkStarted_ = false;
+    if (nearlinkStarted_) {
+        OHOS::Nearlink::NearlinkIpShareStatus current;
+        if (OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current) == 0 &&
+            current.role == OHOS::Nearlink::NearlinkIpShareRole::NONE &&
+            current.state == OHOS::Nearlink::NearlinkIpShareState::IDLE) {
+            nearlinkStarted_ = false;
+        } else {
+            // Accepted Stop is asynchronous. Keep driving retained lower resources on retry.
+            result("NearLink", OHOS::Nearlink::NearlinkIpShareClient::GetInstance().Stop());
+        }
     }
-    if (publishIdle && stopRequested_) {
+    if (nearlinkStarted_ || (publishIdle && stopRequested_)) {
         OHOS::Nearlink::NearlinkIpShareStatus current;
         int32_t ret = OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current);
         if (ret == 0 && (current.role != OHOS::Nearlink::NearlinkIpShareRole::NONE ||
                          current.state != OHOS::Nearlink::NearlinkIpShareState::IDLE)) {
             ret = NETMANAGER_EXT_ERR_OPERATION_FAILED;
+        }
+        if (ret == 0) {
+            nearlinkStarted_ = false;
         }
         result("NearLink drain", ret);
     }
