@@ -123,17 +123,7 @@ bool CheckFamily(int32_t netId, int family, const std::string &host, const std::
     addrinfo hints{}; hints.ai_family = family; hints.ai_socktype = SOCK_STREAM;
     addrinfo *addresses = nullptr;
     queryparam query{}; query.qp_netid = netId; query.qp_type = QEURY_TYPE_NETSYS;
-    auto started = std::chrono::steady_clock::now();
     int resolveRet = getaddrinfo_ext(host.c_str(), port.c_str(), &hints, &addresses, &query);
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - started).count();
-    unsigned resolved = 0;
-    for (auto entry = addresses; entry; entry = entry->ai_next) {
-        if (entry->ai_family == family) ++resolved;
-    }
-    NETMGR_EXT_LOG_I("[NearlinkIpShare][ProbeDns] netId=%{public}d family=%{public}d "
-                     "host=%{public}s port=%{public}s code=%{public}d addresses=%{public}u elapsedMs=%{public}lld",
-                     netId, family, host.c_str(), port.c_str(), resolveRet, resolved, static_cast<long long>(elapsed));
     if (resolveRet != 0) return ProbeFailure(netId, family, "DNS", resolveRet);
     bool success = false; unsigned tried = 0;
     for (auto entry = addresses; entry && tried < 2 && !success; entry = entry->ai_next) {
