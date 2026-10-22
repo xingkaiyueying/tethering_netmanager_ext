@@ -505,6 +505,29 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
     return gatewayReady && published;
 }
 
+void NearlinkIpv6Runtime::PrepareGatewayAddress()
+{
+    if (!prepared_ || !prefix_.empty() || configuredPrefix_.empty()) {
+        return;
+    }
+    std::string prefix = configuredPrefix_;
+    in6_addr address{}, token{};
+    if (!Prefix(prefix, address) || !Layer2Token(layer2_, token)) {
+        return;
+    }
+    std::copy(token.s6_addr + 8, token.s6_addr + 16, address.s6_addr + 8);
+    char text[INET6_ADDRSTRLEN]{};
+    if (!inet_ntop(AF_INET6, &address, text, sizeof(text))) {
+        return;
+    }
+    std::string dns = text;
+    if (SelectPrefix(prefix, dns, true, std::chrono::steady_clock::now())) {
+        // The existing ledger owns partial failures and Cleanup releases them.
+        // Advertise still checks DAD, forwarding, DNS and default-router readiness.
+        (void)ReconcileGatewayAddress();
+    }
+}
+
 bool NearlinkIpv6Runtime::PublishAdvertisement(const RaParams &params, const std::string &dns, bool changed)
 {
     if (dns != dns_ && !dns_.empty() && raStarted_) {

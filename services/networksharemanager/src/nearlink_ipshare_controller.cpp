@@ -918,6 +918,45 @@ int32_t NearlinkIpShareController::ConfigureGatewayIpv4()
     return NETSYS_SUCCESS;
 }
 
+void NearlinkIpShareController::OnInterfaceAddressChanged(const std::string &iface)
+{
+    if (iface.size() <= 5 || iface.compare(0, 5, "sleip") != 0 ||
+        !std::all_of(iface.begin() + 5, iface.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+        return;
+    }
+    const uint32_t index = if_nametoindex(iface.c_str());
+    if (index == 0) return;
+    std::lock_guard lock(mutex_);
+    if (status_.role != NearlinkIpShareRole::GATEWAY || stopRequested_ || shuttingDown_) return;
+    const auto key = std::make_pair(generation_.load(), index);
+    if (!addressReconcilePending_.insert(key).second) return;
+    auto self = shared_from_this();
+    if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, iface, index, key]() {
+        {
+            std::lock_guard lock(self->mutex_);
+            self->addressReconcilePending_.erase(key);
+        }
+        if (!self->IsCurrentSession(key.first) || if_nametoindex(iface.c_str()) != index) return;
+        if (self->multiGateway_) {
+            bool current = std::any_of(self->addressPeers_.begin(), self->addressPeers_.end(), [&](const auto &entry) {
+                const auto &peer = entry.second;
+                return !peer.releasing && peer.mode == 3 && peer.ipv6Prepared &&
+                    peer.iface == iface && peer.ifindex == index;
+            });
+            if (!current) return;
+        } else if (!self->dualStack_ || !self->ipv6Prepared_ || index != self->interfaceIndex_) {
+            return;
+        }
+        // Notifications are hints. Reconciliation checks the current peer ledger
+        // and kernel flags instead of accepting possibly stale event payloads.
+        NETMGR_EXT_LOG_I("[NearlinkIpShare][ConfigTiming] stage=ADDRESS_WAKE iface=%{public}s ifindex=%{public}u",
+                        iface.c_str(), index);
+        self->ConfigureUpstream();
+    })) {
+        addressReconcilePending_.erase(key);
+    }
+}
+
 void NearlinkIpShareController::OnUpstreamChanged()
 {
     std::lock_guard lock(mutex_);
@@ -1339,6 +1378,7 @@ bool NearlinkIpShareController::PublishTerminalNetwork()
         appliedFamilies_ = links;
     }
     supplierAvailable_ = supplier->isAvailable_;
+    RequestFamilyValidation();
     return true;
 }
 
@@ -1603,6 +1643,27 @@ void NearlinkIpShareController::RefreshFamilyStatus()
     Publish(available ? NearlinkIpShareState::ACTIVE : NearlinkIpShareState::CONFIGURING);
 }
 
+void NearlinkIpShareController::RequestFamilyValidation()
+{
+    if (validationPending_ || (!NearlinkFamilyNetwork::Available(families_.ipv4) &&
+                               !NearlinkFamilyNetwork::Available(families_.ipv6))) return;
+    {
+        std::lock_guard lock(mutex_);
+        if (status_.role != NearlinkIpShareRole::TERMINAL || status_.netId < 0 || stopRequested_ || shuttingDown_)
+            return;
+    }
+    auto self = shared_from_this();
+    const uint64_t generation = generation_.load();
+    validationPending_ = true;
+    if (!NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, generation]() {
+        if (!self->IsCurrentSession(generation)) return;
+        self->validationPending_ = false;
+        self->ValidateFamilies();
+    })) {
+        validationPending_ = false;
+    }
+}
+
 void NearlinkIpShareController::ValidateFamilies()
 {
     bool queryPending;
@@ -1657,6 +1718,7 @@ void NearlinkIpShareController::ValidateFamilies()
                                      "revision=%{public}llu current=%{public}llu",
                                      ipv6 ? 6 : 4, static_cast<unsigned long long>(revision),
                                      static_cast<unsigned long long>(current.revision));
+                    self->RequestFamilyValidation();
                     return;
                 }
                 {
@@ -1786,6 +1848,7 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle, bool deferFailure)
     {
         std::lock_guard lock(mutex_);
         ++generation_; // Discard already queued DHCP/link/network callbacks.
+        addressReconcilePending_.clear();
     }
     int32_t error = 0;
     NearlinkIpShareStatus idle;
@@ -1823,6 +1886,7 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle, bool deferFailure)
     ipv6Addresses_ = DhcpL3Ipv6Snapshot{};
     ipv6GatewayPendingSince_ = {};
     maintenancePending_ = false;
+    validationPending_ = false;
     gatewayIfaceMissingSince_ = {};
     for (auto &probe : validation_) {
         ++probe.revision;

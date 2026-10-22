@@ -28,6 +28,8 @@ public:
   bool Prepare(bool gateway, const std::string &layer2, const std::string &iface = "sleip0",
                const std::string &prefix = "");
   bool Advertise(const NetLinkInfo *upstream, bool forwarding, bool dnsReady = true);
+  // Start the first prefix's local address/DAD without publishing an RA.
+  void PrepareGatewayAddress();
   void SetGatewayPrefix(const std::string &prefix)
   {
       configuredPrefix_ = prefix;

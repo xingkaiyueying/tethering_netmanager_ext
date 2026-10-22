@@ -14,6 +14,32 @@ if before_ref:
 prefix = production[production.index('constexpr const char *IFACE'):production.index('bool NearlinkIpv6Runtime::Set(')]
 prefix = prefix.replace('/proc/net/if_inet6', 'if_inet6_upstream.txt')
 advertise = production[production.index('bool NearlinkIpv6Runtime::Advertise('):production.index('bool NearlinkIpv6Runtime::Cleanup(')]
+early_tests = r'''
+ NearlinkIpv6Runtime early;early.ifindex_=7;early.layer2_="02:11:22:33:44:55";
+ early.configuredPrefix_="fd77:abcd::";
+ auto beforeEarly=RouterAdvertisementDaemon::sent.size();
+ early.PrepareGatewayAddress();assert(early.addresses_.empty());
+ early.prepared_=true;failAddAddress=true;early.PrepareGatewayAddress();
+ assert(!early.gatewayAddressOwned_ && !early.routeOwned_ && early.addresses_.empty());
+ assert(!early.daemon_ && RouterAdvertisementDaemon::sent.size()==beforeEarly);
+ failAddAddress=false;failAddRoute=true;
+ {std::ofstream f("if_inet6.txt");}
+ assert(!early.Advertise(nullptr,false));
+ assert(early.gatewayAddressOwned_ && !early.routeOwned_ && early.addresses_.size()==1 && !early.raStarted_);
+ failAddRoute=false;kernelAddress(early.gateway_,0x40);
+ assert(!early.Advertise(nullptr,false) && early.routeOwned_ && !early.raStarted_);
+ assert(early.addresses_.size()==1 && RouterAdvertisementDaemon::sent.size()==beforeEarly);
+ kernelAddress(early.gateway_,0);assert(early.Advertise(nullptr,false));
+ assert(early.daemon_->params.routerLifetime_==0 && early.addresses_.size()==1);
+ NearlinkIpv6Runtime prepared;prepared.prepared_=true;prepared.ifindex_=7;prepared.layer2_=early.layer2_;
+ prepared.configuredPrefix_="fd77:abce::";beforeEarly=RouterAdvertisementDaemon::sent.size();
+ prepared.PrepareGatewayAddress();prepared.PrepareGatewayAddress();
+ assert(prepared.gatewayAddressOwned_ && prepared.routeOwned_ && prepared.addresses_.size()==1);
+ assert(!prepared.daemon_ && RouterAdvertisementDaemon::sent.size()==beforeEarly);
+ puts("IPv6 early prepare: no RA before DAD, idempotent address ownership, failed address/route retry PASS");
+'''
+if 'void NearlinkIpv6Runtime::PrepareGatewayAddress()' not in production:
+    early_tests = ''
 with tempfile.TemporaryDirectory(prefix='p2-s3-gateway-') as directory:
     out = Path(directory)
     def put(name, text):
@@ -86,14 +112,15 @@ template<class... Args> void CaptureLog(std::string format, Args... args)
 }
 #define NETMGR_EXT_LOG_I(...) CaptureLog(__VA_ARGS__)
 namespace OHOS::NetManagerStandard {
+bool failAddAddress=false,failAddRoute=false;
 class NetsysController {public:
 inline static std::vector<std::string> removed;inline static bool failRemove=false;
 static NetsysController &GetInstance(){static NetsysController value;return value;}
-int NetworkAddRoute(int,const char*,const std::string&,const char* nextHop){return strcmp(nextHop,"::")==0?-EINVAL:0;}
+int NetworkAddRoute(int,const char*,const std::string&,const char* nextHop){return failAddRoute || strcmp(nextHop,"::")==0?-EINVAL:0;}
 int NetworkRemoveRoute(int,const char*,const std::string&s,const char*){if(failRemove)return -1;removed.push_back(s);return 0;}
 int DelInterfaceAddress(const char*,const std::string&s,int){if(failRemove)return -1;removed.push_back(s);return 0;}
 };
-bool NearlinkIpv6Runtime::AddAddress(const std::string &a){addresses_.push_back(a);return true;}
+bool NearlinkIpv6Runtime::AddAddress(const std::string &a){if(failAddAddress)return false;addresses_.push_back(a);return true;}
 namespace {
 ''' + prefix + r'''
 std::string routedInterface;
@@ -287,6 +314,7 @@ int main(){
  assert(a.daemon_->params.rdnssLifetime_==180 && b.daemon_->params.rdnssLifetime_==180);
  assert(a.daemon_->params.prefixes_.size()==1 && b.daemon_->params.prefixes_.size()==1);
  puts("gateway: automatic PAN-style prefix, L2 EUI-64, automatic RDNSS, collision guard, renumber/withdrawal PASS");
+''' + early_tests + r'''
 }
 ''')
     exe = out / 'test.exe'

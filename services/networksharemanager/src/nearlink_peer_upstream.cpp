@@ -37,6 +37,46 @@ int32_t NearlinkIpShareController::CleanupGatewayPeerUpstream(PeerAddressContext
     return error;
 }
 
+bool NearlinkIpShareController::PrepareGatewayPeerIpv6(PeerAddressContext &peer, const NetLinkInfo *upstream,
+                                                      bool present)
+{
+    std::string prefix;
+    bool provisioned = false;
+    const auto &pool = configuration_.GetNearlinkIpv6RoutedPool();
+    if (present) {
+        if (pool.empty()) {
+            // Preserve P2 automatic prefix derivation, with a unique /64 for each stable slot.
+            prefix = NearlinkIpv6Runtime::DeriveGatewayPrefix(upstream, peer.slot);
+            provisioned = !prefix.empty();
+        } else if (configuration_.GetNearlinkIpv6RoutedUpstream() == upstreamIface_) {
+            NearlinkPeerAddresses routed;
+            provisioned = NearlinkPeerAddresses::Allocate(configuration_.GetNearlinkIpv4Pool(), pool,
+                                                          maxTerminals_, peer.slot, routed, true);
+            if (provisioned)
+                prefix = routed.prefix;
+        }
+    }
+    // Automatic NAT66 retains one source prefix across upstream recovery.
+    if (peer.ipv6.HasPrefix() && (!provisioned || pool.empty())) {
+        prefix = peer.ipv6.CurrentPrefix();
+    }
+    if (present)
+        for (const auto &address : upstream->netAddrList_)
+            if (address.family_ == AF_INET6 &&
+                NearlinkPeerAddresses::Ipv6Conflicts(prefix, address.address_, address.prefixlen_))
+                provisioned = false;
+    for (const auto &[otherSlot, other] : addressPeers_)
+        if (otherSlot != peer.slot && other.ipv6.OwnsPrefix(prefix))
+            provisioned = false;
+    if (!provisioned)
+        prefix = peer.ipv6.HasPrefix() ? peer.ipv6.CurrentPrefix() : peer.addresses.prefix;
+    peer.ipv6.SetGatewayPrefix(prefix.empty() ? peer.addresses.prefix : prefix);
+    // Address ownership and DAD can progress while forwarding/NAT is prepared.
+    // This operation creates no RA daemon and publishes no router or DNS state.
+    peer.ipv6.PrepareGatewayAddress();
+    return provisioned;
+}
+
 void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo *upstream, int32_t netId)
 {
     auto &netsys = NetsysController::GetInstance();
@@ -77,6 +117,8 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
         if ((!usable || peer.upstreamIface != upstreamIface_ || peer.upstreamNetId != upstreamNetId_) &&
             CleanupGatewayPeerUpstream(peer) != 0)
             usable = false;
+        const bool provisioned = peer.mode == 3 && peer.ipv6Prepared &&
+            PrepareGatewayPeerIpv6(peer, upstream, present);
         int32_t ret = peer.upstreamError;
         if (usable) {
             peer.upstreamIface = upstreamIface_;
@@ -109,42 +151,6 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
         anyForward = anyForward || forwarding;
         peer.ipv6Routed = false;
         if (peer.mode == 3 && peer.ipv6Prepared) {
-            std::string prefix;
-            bool provisioned = false;
-            const auto &pool = configuration_.GetNearlinkIpv6RoutedPool();
-            if (present) {
-                if (pool.empty()) {
-                    // Preserve P2 automatic prefix derivation, with a unique /64 for each stable slot.
-                    prefix = NearlinkIpv6Runtime::DeriveGatewayPrefix(upstream, peer.slot);
-                    provisioned = !prefix.empty();
-                } else if (configuration_.GetNearlinkIpv6RoutedUpstream() == upstreamIface_) {
-                    NearlinkPeerAddresses routed;
-                    provisioned = NearlinkPeerAddresses::Allocate(configuration_.GetNearlinkIpv4Pool(), pool,
-                                                                  maxTerminals_, peer.slot, routed, true);
-                    if (provisioned)
-                        prefix = routed.prefix;
-                }
-            }
-            // Losing the uplink does not renumber the downstream logical link.
-            // Automatic NAT66 keeps one source prefix for this peer session:
-            // MASQUERADE uses the new selected uplink after every recovery.
-            // Explicit routed pools still require their newly provisioned prefix.
-            if (peer.ipv6.HasPrefix() &&
-                (!provisioned || pool.empty())) {
-                prefix = peer.ipv6.CurrentPrefix();
-            }
-            if (present)
-                for (const auto &address : upstream->netAddrList_)
-                    if (address.family_ == AF_INET6 &&
-                        NearlinkPeerAddresses::Ipv6Conflicts(prefix, address.address_, address.prefixlen_))
-                        provisioned = false;
-            // A changed upstream must not graft one peer onto another peer's retiring logical link.
-            for (const auto &[otherSlot, other] : addressPeers_)
-                if (otherSlot != slot && other.ipv6.OwnsPrefix(prefix))
-                    provisioned = false;
-            if (!provisioned)
-                prefix = peer.ipv6.HasPrefix() ? peer.ipv6.CurrentPrefix() : peer.addresses.prefix;
-            peer.ipv6.SetGatewayPrefix(prefix.empty() ? peer.addresses.prefix : prefix);
             peer.ipv6Ready =
                 peer.ipv6.Advertise(present ? upstream : nullptr, provisioned && forwarding && peer.natEnabled,
                                     dnsProxyStarted_);

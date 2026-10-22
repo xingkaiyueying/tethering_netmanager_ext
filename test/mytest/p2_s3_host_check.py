@@ -43,6 +43,7 @@ class Parcelable { public: virtual ~Parcelable()=default; virtual bool Marshalli
 namespace OHOS::NetManagerStandard {
 class NearlinkIpv6Runtime { public:
 bool Prepare(bool,const std::string&,const std::string& = "sleip0",const std::string& = ""){return call("ipv6-prepare")==0;}
+void PrepareGatewayAddress(){call("ipv6-address-prepare");}
 std::string prefix;bool routed=false;
 inline static unsigned upstreamEpoch=0;
 inline static bool kernelV4Default=false;
@@ -92,12 +93,38 @@ bool Cleanup(){return call("ipv6-cleanup")==0;}
             (out / Path(name).name).write_bytes(payload)
     # Control detached probe completion order while executing the production controller.
     controller = (out / 'nearlink_ipshare_controller.cpp').read_text()
+    negative = os.environ.get('P3_CONFIG_TIMING_NEGATIVE')
+    if negative == 'probe':
+        controller = controller.replace('supplierAvailable_ = supplier->isAvailable_;\n    RequestFamilyValidation();',
+                                        'supplierAvailable_ = supplier->isAvailable_;')
+    if negative == 'wake':
+        start = controller.index('void NearlinkIpShareController::OnInterfaceAddressChanged(')
+        end = controller.index('void NearlinkIpShareController::OnUpstreamChanged()', start)
+        controller = controller[:start] + 'void NearlinkIpShareController::OnInterfaceAddressChanged(const std::string &) {}\n\n' + controller[end:]
+    if negative == 'prefix':
+        text = (out / 'nearlink_peer_upstream.cpp').read_text()
+        (out / 'nearlink_peer_upstream.cpp').write_text(text.replace('    peer.ipv6.PrepareGatewayAddress();', ''))
+    fast_config = 'void NearlinkIpShareController::RequestFamilyValidation()' in controller
+    fast_prefix = 'PrepareGatewayPeerIpv6(' in (out / 'nearlink_peer_upstream.cpp').read_text()
+    tracker = (source / 'src/networkshare_tracker.cpp').read_text()
+    callbacks = tracker[tracker.index('int32_t NetworkShareTracker::NetsysCallback::OnInterfaceAddressUpdated('):
+                        tracker.index('int32_t NetworkShareTracker::NetsysCallback::OnInterfaceAdded(')]
+    if not fast_config:
+        callbacks = callbacks.replace('NearlinkIpShareController::GetInstance()->OnInterfaceAddressChanged(iface);', '')
+    put('address_callbacks.cpp', 'namespace OHOS::NetManagerStandard {\n' + callbacks + '\n}\n')
+    controller = controller.replace('std::thread([self, netId, ipv6, i,',
+                                    'ProbeThread(ipv6, [self, netId, ipv6, i,')
     (out / 'nearlink_ipshare_controller.cpp').write_text(controller.replace('std::thread([', 'ProbeThread(['))
     put('nearlink_family_validation.h', '''#pragma once
 #include <functional>
 #include <deque>
-inline std::deque<std::function<void()>> probeThreads;
-struct ProbeThread {template<class F> ProbeThread(F f){probeThreads.push_back(f);} void detach() {}};
+struct ProbeJob {bool ipv6;std::function<void()> run;void operator()(){run();}};
+inline std::deque<ProbeJob> probeThreads;
+inline ProbeJob TakeProbe(bool ipv6){auto it=std::find_if(probeThreads.begin(),probeThreads.end(),
+ [=](const auto &job){return job.ipv6==ipv6;});assert(it!=probeThreads.end());auto job=*it;probeThreads.erase(it);return job;}
+struct ProbeThread {
+template<class F> ProbeThread(bool ipv6,F f){probeThreads.push_back({ipv6,f});}
+template<class F> ProbeThread(F f):ProbeThread(false,f){} void detach() {}};
 namespace OHOS::NetManagerStandard {
 struct NearlinkFamilyValidation { int ipv4=0,ipv6=0; };
 inline int probe4=2,probe6=3;
@@ -120,7 +147,8 @@ inline int SetDhcpRange(const char*,const DhcpRange*) {return call("range");}
 inline int StartDhcpServer(const char*) {return call("server-start");}
 inline int StopDhcpServer(const char*) {return call("server-stop");}
 ''')
-    put('test.cpp', r'''
+    put('test.cpp', 'constexpr bool fastConfig=' + ('true' if fast_config else 'false') + ';\n' +
+        'constexpr bool fastPrefix=' + ('true' if fast_prefix else 'false') + ';\n' + r'''
 #include "mock.h"
 #include <chrono>
 #include "dhcp_c_api.h"
@@ -132,6 +160,7 @@ inline int StopDhcpServer(const char*) {return call("server-stop");}
 #include "nearlink_ipshare_controller.cpp"
 #include "nearlink_peer_address.cpp"
 #include "nearlink_peer_upstream.cpp"
+#include "address_callbacks.cpp"
 using namespace OHOS::NetManagerStandard;
 int main() {
     auto c=NearlinkIpShareController::GetInstance();
@@ -153,6 +182,7 @@ int main() {
     v6.ipv6LifeTime.routerLifeTime=180; v6.dnsList.dnsNumber=1;
     strcpy(v6.dnsList.dnsAddr[0],"fd77:77:1::53");
     c->OnDhcpSuccess(0,"sleip0",v6); q.Drain();
+    if(fastConfig)assert(probeThreads.size()==1 && probeThreads.front().ipv6);
     assert(net.available && net.lastLink.netAddrList_.size()==1);
     assert(c->status_.ipv6.configurationAvailable && !c->status_.ipv6.externalAvailable);
     { Parcel parcel; assert(c->status_.Marshalling(parcel)); }
@@ -170,24 +200,24 @@ int main() {
     assert(c->netSupplierId_==supplier && net.registrations==1);
     // A slow/stale IPv6 probe cannot clear or delay an unchanged IPv4 result.
     c->ValidateFamilies();assert(probeThreads.size()==2);
-    auto complete4=probeThreads.front();probeThreads.pop_front();
+    auto complete4=TakeProbe(false);
     complete4();q.Drain();
     assert(c->status_.ipv4.validation==2 && c->status_.ipv4.externalAvailable);
     assert(c->status_.ipv6.validation==1);
     strcpy(v6.dnsList.dnsAddr[0],"fd77:77:1::54");
     c->OnDhcpSuccess(0,"sleip0",v6);q.Drain();
     assert(c->status_.ipv4.validation==2 && c->status_.ipv4.externalAvailable);
-    auto stale6=probeThreads.front();probeThreads.pop_front();stale6();q.Drain();
-    assert(c->status_.ipv6.validation==0 && c->status_.ipv4.validation==2);
+    auto stale6=TakeProbe(true);stale6();q.Drain();
+    assert(c->status_.ipv6.validation==(fastConfig ? 1 : 0) && c->status_.ipv4.validation==2);
     c->ValidateFamilies();assert(probeThreads.size()==1);
-    auto complete6=probeThreads.front();probeThreads.pop_front();complete6();q.Drain();
+    auto complete6=TakeProbe(true);complete6();q.Drain();
     assert(c->status_.ipv6.validation==3 && !c->status_.ipv6.externalAvailable);
     assert(c->status_.ipv4.validation==2 && c->status_.ipv4.externalAvailable);
     // A genuine fresh IPv4 failure must still replace PASS after its own DNS changes.
     probe4=3;strcpy(v4.strOptDns1,"192.168.77.53");
     c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();c->ValidateFamilies();
     assert(probeThreads.size()==1);
-    complete4=probeThreads.front();probeThreads.pop_front();complete4();q.Drain();
+    complete4=TakeProbe(false);complete4();q.Drain();
     assert(c->status_.ipv4.validation==3 && !c->status_.ipv4.externalAvailable);
     assert(c->status_.ipv6.validation==3);
     // Network identity changes invalidate both families even with identical link properties.
@@ -196,13 +226,13 @@ int main() {
     errors["netid-lookup"]=-7;assert(c->PublishTerminalNetwork());assert(c->status_.netId==-1);
     net.terminalNetId=42;errors.clear();c->ValidateFamilies();
     assert(c->status_.netId==42 && probeThreads.size()==2);
-    complete4=probeThreads.front();probeThreads.pop_front();complete4();q.Drain();
-    complete6=probeThreads.front();probeThreads.pop_front();complete6();q.Drain();
+    complete4=TakeProbe(false);complete4();q.Drain();
+    complete6=TakeProbe(true);complete6();q.Drain();
     strcpy(v4.strOptDns1,"192.168.77.1");probe4=2;
     c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();c->ValidateFamilies();
     assert(probeThreads.size()==1);
     // A stopped session cannot publish a late PASS into the next session.
-    auto late4=probeThreads.front();probeThreads.pop_front();
+    auto late4=TakeProbe(false);
     puts("per-family validation: independent completion, IPv6 changes retain IPv4 PASS, stale family/session rejection, genuine failure retained PASS");
     { Parcel parcel; assert(c->status_.Marshalling(parcel)); }
     c->OnDhcpFailure(4,"sleip0","renew"); q.Drain();
@@ -332,6 +362,7 @@ int main() {
     OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
     c->OnNearlinkStatus(link);q.Drain();
     assert(c->addressPeers_.size()==2);
+    if(fastPrefix)assert(std::find(calls.begin(),calls.end(),"ipv6-address-prepare")!=calls.end());
     assert(c->status_.occupiedTerminals==2 && c->status_.peers.size()==2 && c->status_.ValidPeers());
     assert(c->status_.peers[0].slot==0 && c->status_.peers[1].slot==1);
     assert(c->status_.peers[0].selectedMode==3 && c->status_.peers[1].selectedMode==1);
@@ -396,9 +427,41 @@ int main() {
         ++link.generation;link.sequence=1;link.serviceReady=true;
         link.peerLinks={{0,20+link.generation*2,3,"sleip0"},{1,21+link.generation*2,3,"sleip1"}};
         OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
+        calls.clear();
         c->OnNearlinkStatus(link);q.Drain();q.delayed.clear();
         assert(c->addressPeers_.size()==2 && c->gatewayReserved_);
+        if(fastPrefix && net.hasDefault) {
+            assert(std::find(calls.begin(),calls.end(),"ipv6-address-prepare")<
+                   std::find(calls.begin(),calls.end(),"iface-forward-add"));
+            assert(std::find(calls.begin(),calls.end(),"ipv6-address-prepare")<
+                   std::find(calls.begin(),calls.end(),"nat-add"));
+        }
     };
+    if(fastConfig) {
+        NetworkShareTracker::NetsysCallback notify;
+        net.hasDefault=true;activeGateway();errors["ra"]=-7;c->ConfigureUpstream();
+        assert(!c->addressPeers_[0].ipv6Ready);errors.clear();calls.clear();
+        notify.OnInterfaceAddressUpdated("ignored","wlan0",0,0);
+        notify.OnInterfaceAddressRemoved("ignored","bt-pan",0,0);
+        notify.OnInterfaceAddressUpdated("ignored","sleipBad",0,0);
+        assert(q.tasks.empty() && calls.empty());
+        for(int i=0;i<100;++i)notify.OnInterfaceAddressUpdated("ignored","sleip0",0,0);
+        notify.OnInterfaceAddressRemoved("ignored","sleip0",0,0);
+        assert(q.tasks.size()==1);q.Drain();
+        assert(c->addressPeers_[0].ipv6Ready && c->addressPeers_[1].dhcpStarted);
+        q.failSubmit=true;notify.OnInterfaceAddressUpdated("ignored","sleip0",0,0);
+        assert(q.tasks.empty());q.failSubmit=false;
+        notify.OnInterfaceAddressUpdated("ignored","sleip0",0,0);assert(q.tasks.size()==1);q.Drain();
+        notify.OnInterfaceAddressUpdated("ignored","sleip0",0,0);
+        mockIfIndex=8;calls.clear();q.Drain();assert(calls.empty());mockIfIndex=7;
+        notify.OnInterfaceAddressUpdated("ignored","sleip9",0,0);calls.clear();q.Drain();assert(calls.empty());
+        notify.OnInterfaceAddressUpdated("ignored","sleip0",0,0);
+        auto staleWake=q.tasks.front();q.tasks.pop_front();
+        assert(c->StopGateway()==0);q.Drain();calls.clear();staleWake();q.Drain();assert(calls.empty());
+        assert(c->status_.state==NearlinkIpShareState::IDLE);
+        notify.OnInterfaceAddressUpdated("ignored","sleip0",0,0);assert(q.tasks.empty());
+        puts("IPv6 startup: early address before NAT/forward, immediate family probe, coalesced address wake, enqueue retry, legacy isolation, ifindex/session rejection PASS");
+    }
     auto retryStop=[&]() {assert(!q.delayed.empty());auto f=q.delayed.front();q.delayed.pop_front();f();q.Drain();};
     // P3-S3: two downstream ledgers, immediate upstream events, default loss, and independent retries.
     activeGateway();net.hasDefault=true;net.iface="wlan0";

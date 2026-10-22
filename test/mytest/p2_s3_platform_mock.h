@@ -149,11 +149,17 @@ public:
 };
 class NetworkShareTracker {
 public:
+    class NetsysCallback {public:
+        int32_t OnInterfaceAddressUpdated(const std::string &,const std::string &,int,int);
+        int32_t OnInterfaceAddressRemoved(const std::string &,const std::string &,int,int);
+    };
     std::deque<std::function<void()>> tasks;
     std::vector<NearlinkIpShareStatus> events;
     static NetworkShareTracker &GetInstance() { static NetworkShareTracker n; return n; }
     std::deque<std::function<void()>> delayed;
+    bool failSubmit=false;
     bool SubmitNearlinkTask(const std::function<void()> &f, uint64_t delay=0) {
+        if(failSubmit)return false;
         (delay ? delayed : tasks).push_back(f); return true;
     }
     void SendNearlinkStateChange(const NearlinkIpShareStatus &s) { events.push_back(s); }

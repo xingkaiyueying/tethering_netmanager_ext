@@ -16,6 +16,7 @@
 #include "networkshare_tracker.h"
 
 #include "networkshare_admission.h"
+#include "nearlink_ipshare_controller.h"
 
 #include <cinttypes>
 #include <net/if.h>
@@ -67,15 +68,21 @@ constexpr int32_t MAX_CALLBACK_COUNT = 100;
 constexpr const SharingIfaceType SHARE_VALID_INTERFACES[3] = {SharingIfaceType::SHARING_WIFI,
     SharingIfaceType::SHARING_USB, SharingIfaceType::SHARING_BLUETOOTH};
 
-int32_t NetworkShareTracker::NetsysCallback::OnInterfaceAddressUpdated(const std::string &, const std::string &, int,
+int32_t NetworkShareTracker::NetsysCallback::OnInterfaceAddressUpdated(const std::string &, const std::string &iface, int,
                                                                        int)
 {
+    if (iface.compare(0, 5, "sleip") == 0) {
+        NearlinkIpShareController::GetInstance()->OnInterfaceAddressChanged(iface);
+    }
     return 0;
 }
 
-int32_t NetworkShareTracker::NetsysCallback::OnInterfaceAddressRemoved(const std::string &, const std::string &, int,
+int32_t NetworkShareTracker::NetsysCallback::OnInterfaceAddressRemoved(const std::string &, const std::string &iface, int,
                                                                        int)
 {
+    if (iface.compare(0, 5, "sleip") == 0) {
+        NearlinkIpShareController::GetInstance()->OnInterfaceAddressChanged(iface);
+    }
     return 0;
 }
 

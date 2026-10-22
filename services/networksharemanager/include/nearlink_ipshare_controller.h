@@ -20,6 +20,7 @@
 #include <chrono>
 #include <memory>
 #include <map>
+#include <set>
 #include "nearlink_peer_address_pool.h"
 #include <mutex>
 #include <string>
@@ -62,6 +63,7 @@ public:
     void OnDhcpFailure(int32_t status, const std::string &iface, const std::string &reason, uint64_t session = 0);
     void OnUpstreamChanged();
     void OnIpv6Addresses(const std::string &iface, const DhcpL3Ipv6Snapshot &snapshot, uint64_t session = 0);
+    void OnInterfaceAddressChanged(const std::string &iface);
 
 private:
     NearlinkIpShareController() = default;
@@ -94,6 +96,7 @@ private:
     bool CleanupGatewayPeer(PeerAddressContext &peer);
     int32_t CleanupGatewayPeerUpstream(PeerAddressContext &peer);
     void ConfigureGatewayPeerUpstreams(const NetLinkInfo *upstream, int32_t netId);
+    bool PrepareGatewayPeerIpv6(PeerAddressContext &peer, const NetLinkInfo *upstream, bool present);
     int32_t ConfigureGatewayPeerIpv4(PeerAddressContext &peer, const NetLinkInfo *upstream);
     std::map<uint32_t, PeerAddressContext> addressPeers_;
     std::vector<NearlinkIpSharePeerStatus> gatewayPeerLinks_;
@@ -111,6 +114,9 @@ private:
     void ScheduleMaintenance(uint64_t generation);
     void RefreshFamilyStatus();
     void ValidateFamilies();
+    void RequestFamilyValidation();
+    bool validationPending_{false};
+    std::set<std::pair<uint64_t, uint32_t>> addressReconcilePending_;
     struct FamilyValidationState {
         uint64_t revision{0};
         bool inFlight{false};
