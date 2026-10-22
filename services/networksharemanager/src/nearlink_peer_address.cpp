@@ -14,6 +14,12 @@
  */
 #include "nearlink_ipshare_client.h"
 
+#include <algorithm>
+#include <cerrno>
+#include <net/if.h>
+#include <set>
+
+// Include libc interface definitions before Netsys pulls in <linux/if.h>.
 #include "dhcp_c_api.h"
 #include "nearlink_host.h"
 #include "nearlink_ipshare_controller.h"
@@ -22,10 +28,7 @@
 #include "netmgr_ext_log_wrapper.h"
 #include "netsys_controller.h"
 #include "securec.h"
-#include <algorithm>
-#include <cerrno>
-#include <net/if.h>
-#include <set>
+
 namespace OHOS::NetManagerStandard {
 namespace {
 constexpr int32_t PEER_IP_SHARE_LOCAL_NET_ID = 99;

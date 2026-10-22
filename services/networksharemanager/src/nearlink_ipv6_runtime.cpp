@@ -13,8 +13,7 @@
  * limitations under the License.
  */
 #include "nearlink_ipv6_runtime.h"
-#include "netmgr_ext_log_wrapper.h"
-#include "netsys_controller.h"
+
 #include <algorithm>
 #include <arpa/inet.h>
 #include <array>
@@ -32,6 +31,10 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+
+// Include libc interface definitions before Netsys pulls in <linux/if.h>.
+#include "netmgr_ext_log_wrapper.h"
+#include "netsys_controller.h"
 
 namespace OHOS::NetManagerStandard {
 namespace {
