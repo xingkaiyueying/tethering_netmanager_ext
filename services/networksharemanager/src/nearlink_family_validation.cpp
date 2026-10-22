@@ -123,7 +123,16 @@ bool CheckFamily(int32_t netId, int family, const std::string &host, const std::
     addrinfo hints{}; hints.ai_family = family; hints.ai_socktype = SOCK_STREAM;
     addrinfo *addresses = nullptr;
     queryparam query{}; query.qp_netid = netId; query.qp_type = QEURY_TYPE_NETSYS;
+    auto dnsStarted = std::chrono::steady_clock::now();
+    auto dnsMono = std::chrono::duration_cast<std::chrono::milliseconds>(dnsStarted.time_since_epoch()).count();
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][ConfigTiming] stage=DNS_BEGIN netId=%{public}d family=%{public}d "
+                    "monoMs=%{public}lld", netId, family, static_cast<long long>(dnsMono));
     int resolveRet = getaddrinfo_ext(host.c_str(), port.c_str(), &hints, &addresses, &query);
+    auto dnsElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - dnsStarted).count();
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][ConfigTiming] stage=DNS_END netId=%{public}d family=%{public}d "
+                    "elapsedMs=%{public}lld code=%{public}d", netId, family,
+                    static_cast<long long>(dnsElapsed), resolveRet);
     if (resolveRet != 0) return ProbeFailure(netId, family, "DNS", resolveRet);
     bool success = false; unsigned tried = 0;
     for (auto entry = addresses; entry && tried < 2 && !success; entry = entry->ai_next) {

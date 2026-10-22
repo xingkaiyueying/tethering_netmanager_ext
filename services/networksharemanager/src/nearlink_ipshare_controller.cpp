@@ -1324,6 +1324,16 @@ bool NearlinkIpShareController::PublishTerminalNetwork()
                                  "revision=%{public}llu networkChanged=%{public}d",
                                  netId, i == 0 ? 4 : 6,
                                  static_cast<unsigned long long>(validation_[i].revision), networkChanged);
+                auto mono = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                NETMGR_EXT_LOG_I("[NearlinkIpShare][ConfigTiming] stage=NETWORK_COMMIT generation=%{public}llu "
+                                "ifindex=%{public}u netId=%{public}d family=%{public}d revision=%{public}llu "
+                                "monoMs=%{public}lld addresses=%{public}zu routes=%{public}zu dns=%{public}zu "
+                                "ready=%{public}d", static_cast<unsigned long long>(generation_.load()),
+                                interfaceIndex_, netId, i == 0 ? 4 : 6,
+                                static_cast<unsigned long long>(validation_[i].revision), static_cast<long long>(mono),
+                                links[i].netAddrList_.size(), links[i].routeList_.size(), links[i].dnsList_.size(),
+                                NearlinkFamilyNetwork::Available(links[i]));
             }
         }
         appliedFamilies_ = links;
@@ -1625,11 +1635,18 @@ void NearlinkIpShareController::ValidateFamilies()
         }
         probe.inFlight = true;
         probe.next = now + std::chrono::seconds(30);
+        auto mono = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        NETMGR_EXT_LOG_I("[NearlinkIpShare][ConfigTiming] stage=PROBE_START generation=%{public}llu "
+                        "netId=%{public}d family=%{public}d revision=%{public}llu monoMs=%{public}lld",
+                        static_cast<unsigned long long>(generation_.load()), netId, ipv6 ? 6 : 4,
+                        static_cast<unsigned long long>(probe.revision), static_cast<long long>(mono));
         // One bounded in-flight probe per family; slow DNS/HTTP cannot delay the other family or stop.
         std::thread([self, netId, ipv6, i, generation = generation_.load(), revision = probe.revision]() {
             auto result = ValidateNearlinkFamilies(netId, !ipv6, ipv6);
             const int32_t value = ipv6 ? result.ipv6 : result.ipv4;
-            NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, value, generation, revision, i, ipv6]() {
+            auto completed = std::chrono::steady_clock::now();
+            NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, value, generation, revision, i, ipv6, completed]() {
                 if (!self->IsCurrentSession(generation)) {
                     return;
                 }
@@ -1648,6 +1665,14 @@ void NearlinkIpShareController::ValidateFamilies()
                     family.validation = family.configurationAvailable ? value : 0;
                     family.externalAvailable = value == 2 && family.configurationAvailable;
                 }
+                auto applied = std::chrono::steady_clock::now();
+                auto queueMs = std::chrono::duration_cast<std::chrono::milliseconds>(applied - completed).count();
+                auto mono = std::chrono::duration_cast<std::chrono::milliseconds>(applied.time_since_epoch()).count();
+                NETMGR_EXT_LOG_I("[NearlinkIpShare][ConfigTiming] stage=PROBE_APPLY generation=%{public}llu "
+                                "family=%{public}d revision=%{public}llu monoMs=%{public}lld "
+                                "queueMs=%{public}lld result=%{public}d", static_cast<unsigned long long>(generation),
+                                ipv6 ? 6 : 4, static_cast<unsigned long long>(revision), static_cast<long long>(mono),
+                                static_cast<long long>(queueMs), value);
                 current.next = std::chrono::steady_clock::now() + std::chrono::seconds(value == 3 ? 5 : 30);
                 self->RefreshFamilyStatus();
             });

@@ -86,6 +86,10 @@ private:
     };
     std::vector<Retired> retired_;
     int lastRouterLifetime_{-1}, lastMtu_{-1};
+    // Diagnostic state only; readiness continues to use the kernel flags below.
+    int timingGatewayFlags_{-2};
+    bool timingGatewayReady_{false};
+    std::chrono::steady_clock::time_point timingGatewayAdded_{};
     std::map<std::string, std::string> settings_;
     std::vector<std::string> addresses_;
     std::string layer2_, prefix_, gateway_, dns_, advertisedPrefix_;

@@ -75,6 +75,16 @@ struct Route {Address destination_;};struct NetLinkInfo {uint16_t mtu_=0;std::st
 #include "nearlink_ipv6_runtime.h"
 #undef private
 #include "nearlink_peer_address_pool.h"
+std::vector<std::string> timingLogs;
+template<class... Args> void CaptureLog(std::string format, Args... args)
+{
+ for (const auto *tag : {"{public}", "{private}"}) {
+  size_t pos;while((pos=format.find(tag))!=std::string::npos)format.erase(pos,strlen(tag));
+ }
+ char message[2048]{};snprintf(message,sizeof(message),format.c_str(),args...);
+ timingLogs.emplace_back(message);
+}
+#define NETMGR_EXT_LOG_I(...) CaptureLog(__VA_ARGS__)
 namespace OHOS::NetManagerStandard {
 class NetsysController {public:
 inline static std::vector<std::string> removed;inline static bool failRemove=false;
@@ -130,13 +140,25 @@ int main(){
  assert(runtime.prefix_=="2001:db8:10:21::");
  assert(runtime.gateway_=="2001:db8:10:21:11:22ff:fe33:4455");
  assert(runtime.addresses_.size()==1);
+ const auto missingLogs=timingLogs.size();
+ assert(!runtime.Advertise(&up,true));assert(timingLogs.size()==missingLogs);
  kernelAddress(runtime.gateway_,0x40); // Tentative address must not be advertised as DNS or a prefix.
  assert(!runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==0);
+ if(!timingLogs.empty())assert(timingLogs.back().find("flags=64 owned=1 route=1 ready=0")!=std::string::npos);
  kernelAddress(runtime.gateway_,0);
  RouterAdvertisementDaemon::failNext=1;
  assert(!runtime.Advertise(&up,true));assert(runtime.advertisedPrefix_.empty());
  assert(runtime.dns_.empty()); // A failed first RA cannot publish success in the controller.
  assert(runtime.Advertise(&up,true));assert(RouterAdvertisementDaemon::starts==1);
+ if(!timingLogs.empty()) {
+  bool ready=false,failed=false,sent=false;
+  for(const auto &log:timingLogs) {
+   ready|=log.find("flags=0 owned=1 route=1 ready=1")!=std::string::npos;
+   failed|=log.find("stage=RA_IMMEDIATE")!=std::string::npos && log.find("success=0")!=std::string::npos;
+   sent|=log.find("stage=RA_IMMEDIATE")!=std::string::npos && log.find("success=1")!=std::string::npos;
+  }
+  assert(ready && failed && sent);
+ }
  assert(runtime.daemon_->params.dnses_.size()==1);
  assert(runtime.daemon_->params.prefixes_.size()==1);
  // A narrower upstream MTU must be sent immediately, including an unchanged prefix/DNS.
