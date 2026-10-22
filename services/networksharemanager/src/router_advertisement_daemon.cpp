@@ -279,8 +279,7 @@ void RouterAdvertisementDaemon::RunRecvRsThread()
             continue;
         }
         if (layer3) {
-            if (rval < 8 || solicitation[1] != 0 || hops != 255 ||
-                (messageFlags & (MSG_TRUNC | MSG_CTRUNC)) != 0 ||
+            if (rval < 8 || solicitation[1] != 0 || hops != 255 || (messageFlags & (MSG_TRUNC | MSG_CTRUNC)) != 0 ||
                 (!IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr) && !IN6_IS_ADDR_LINKLOCAL(&solicitor.sin6_addr))) {
                 continue;
             }
@@ -289,7 +288,7 @@ void RouterAdvertisementDaemon::RunRecvRsThread()
                 if (static_cast<size_t>(rval) - i < 2 || solicitation[i + 1] == 0 ||
                     size_t(solicitation[i + 1]) * 8 > static_cast<size_t>(rval) - i ||
                     (solicitation[i] == 1 &&
-                    (solicitation[i + 1] != 1 || IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr)))) {
+                     (solicitation[i + 1] != 1 || IN6_IS_ADDR_UNSPECIFIED(&solicitor.sin6_addr)))) {
                     valid = false;
                     break;
                 }
@@ -365,17 +364,20 @@ void RouterAdvertisementDaemon::ResetRaRetryInterval()
 bool RouterAdvertisementDaemon::AssembleRaLocked()
 {
     NETMGR_EXT_LOG_D("Generate Ra package start");
-    if (!raParams_) return false;
+    if (!raParams_)
+        return false;
     const size_t dnsCount = raParams_->layer3_ ? raParams_->dnses_.size() : raParams_->prefixes_.size();
     const size_t required = RA_HEADER_SIZE + sizeof(Icmpv6SllOpt) + sizeof(Icmpv6MtuOpt) +
-        raParams_->prefixes_.size() * sizeof(Icmpv6PrefixInfoOpt) + sizeof(Icmpv6RdnsOpt) + dnsCount * IPV6_ADDR_LEN;
-    if (required > sizeof(raPacket_) || (raParams_->layer3_ &&
-        (raParams_->prefixes_.size() > 4 || dnsCount > 4 || raParams_->mtu_ < 1280 || raParams_->mtu_ > 1500)))
+                            raParams_->prefixes_.size() * sizeof(Icmpv6PrefixInfoOpt) + sizeof(Icmpv6RdnsOpt) +
+                            dnsCount * IPV6_ADDR_LEN;
+    if (required > sizeof(raPacket_) || (raParams_->layer3_ && (raParams_->prefixes_.size() > 4 || dnsCount > 4 ||
+                                                                raParams_->mtu_ < 1280 || raParams_->mtu_ > 1500)))
         return false;
     for (const auto &prefix : raParams_->prefixes_) {
         if (raParams_->layer3_ && (prefix.prefixesLength != 64 || prefix.preferredLifetime > prefix.validLifetime ||
-            IN6_IS_ADDR_MULTICAST(&prefix.prefix) || IN6_IS_ADDR_LINKLOCAL(&prefix.prefix) ||
-            IN6_IS_ADDR_UNSPECIFIED(&prefix.prefix))) return false;
+                                   IN6_IS_ADDR_MULTICAST(&prefix.prefix) || IN6_IS_ADDR_LINKLOCAL(&prefix.prefix) ||
+                                   IN6_IS_ADDR_UNSPECIFIED(&prefix.prefix)))
+            return false;
     }
     uint8_t raBuf[IPV6_MIN_MTU] = {};
     uint8_t *ptr = raBuf;
@@ -538,7 +540,8 @@ uint16_t RouterAdvertisementDaemon::PutRaRdnss(uint8_t *raBuf)
     //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     Icmpv6RdnsOpt rdnsInfoSt;
     size_t raRdnsNum = raParams_->layer3_ ? raParams_->dnses_.size() : raParams_->prefixes_.size();
-    if (raRdnsNum == 0) return 0;
+    if (raRdnsNum == 0)
+        return 0;
     rdnsInfoSt.type = ND_OPTION_RDNSS_TYPE;
     rdnsInfoSt.len = (sizeof(Icmpv6RdnsOpt) + raRdnsNum * IPV6_ADDR_LEN) / UNITS_OF_OCTETS;
     rdnsInfoSt.lifetime = htonl(raParams_->layer3_ ? raParams_->rdnssLifetime_ : DEFAULT_LIFETIME);

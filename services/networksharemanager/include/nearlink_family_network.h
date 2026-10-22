@@ -2,9 +2,9 @@
 #ifndef NEARLINK_FAMILY_NETWORK_H
 #define NEARLINK_FAMILY_NETWORK_H
 
+#include "net_link_info.h"
 #include <algorithm>
 #include <chrono>
-#include "net_link_info.h"
 
 namespace OHOS::NetManagerStandard {
 // Worker-owned desired state. NetConn applies the aggregate as a diff on one supplier/netId.
@@ -14,7 +14,7 @@ public:
     using Clock = std::chrono::steady_clock;
     NetLinkInfo ipv4;
     NetLinkInfo ipv6;
-    Clock::time_point leaseExpiry {};
+    Clock::time_point leaseExpiry{};
 
     static bool Available(const NetLinkInfo &link)
     {
@@ -32,8 +32,10 @@ public:
             link.routeList_.insert(link.routeList_.end(), family->routeList_.begin(), family->routeList_.end());
             for (const auto &dns : family->dnsList_) {
                 if (std::none_of(link.dnsList_.begin(), link.dnsList_.end(), [&dns](const auto &existing) {
-                    return existing.family_ == dns.family_ && existing.address_ == dns.address_;
-                })) link.dnsList_.push_back(dns);
+                        return existing.family_ == dns.family_ && existing.address_ == dns.address_;
+                    })) {
+                    link.dnsList_.push_back(dns);
+                }
             }
         }
         return link;

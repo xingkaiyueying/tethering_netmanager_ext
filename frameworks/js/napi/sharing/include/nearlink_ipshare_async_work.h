@@ -37,7 +37,16 @@ public:
     static void StatusCallback(napi_env env, napi_status status, void *data);
 
 private:
-    enum class Operation { SUPPORT, CAPABILITIES, CAPACITY, START_GATEWAY, STOP_GATEWAY, START_TERMINAL, STOP_TERMINAL, GET_STATUS };
+    enum class Operation {
+        SUPPORT,
+        CAPABILITIES,
+        CAPACITY,
+        START_GATEWAY,
+        STOP_GATEWAY,
+        START_TERMINAL,
+        STOP_TERMINAL,
+        GET_STATUS
+    };
     static bool Execute(NearlinkIpShareContext *context, Operation operation);
     static bool DoSupport(NearlinkIpShareContext *context);
     static bool DoCapabilities(NearlinkIpShareContext *context);

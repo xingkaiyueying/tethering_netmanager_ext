@@ -292,8 +292,7 @@ void NetworkShareMainStateMachine::ChooseUpstreamNetwork()
         uint32_t tunv4IfIndex = NetworkShareTracker::GetInstance().GetInterfaceIndexByName(tunv4UpstreamIfaceName);
         if (tunv4IfIndex != 0) {
             int32_t result = NetworkShareAdmission::GetInstance().LegacyResource("resource:nat", true, [&]() {
-                return NetsysController::GetInstance().EnableNat(FAKE_DOWNSTREAM_IFACENAME,
-                    tunv4UpstreamIfaceName);
+                return NetsysController::GetInstance().EnableNat(FAKE_DOWNSTREAM_IFACENAME, tunv4UpstreamIfaceName);
             });
             if (result != NETSYS_SUCCESS) {
                 NETMGR_EXT_LOG_E("Main StateMachine enable NAT tunv4 newIface[%{public}s] error[%{public}d].",

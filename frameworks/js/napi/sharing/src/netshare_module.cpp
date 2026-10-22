@@ -146,67 +146,71 @@ napi_value GetStatsTotalBytes(napi_env env, napi_callback_info info)
 
 napi_value IsNearlinkIpShareSupported(napi_env env, napi_callback_info info)
 {
-    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_IS_NEARLINK_IPSHARE_SUPPORTED,
-        nullptr, NearlinkIpShareAsyncWork::ExecIsSupported, NearlinkIpShareAsyncWork::SupportedCallback);
+    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_IS_NEARLINK_IPSHARE_SUPPORTED, nullptr,
+                                                             NearlinkIpShareAsyncWork::ExecIsSupported,
+                                                             NearlinkIpShareAsyncWork::SupportedCallback);
 }
 
 napi_value GetNearlinkIpShareCapabilities(napi_env env, napi_callback_info info)
 {
     return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_GET_NEARLINK_IPSHARE_CAPABILITIES,
-        nullptr, NearlinkIpShareAsyncWork::ExecGetCapabilities, NearlinkIpShareAsyncWork::CapabilitiesCallback);
+                                                             nullptr, NearlinkIpShareAsyncWork::ExecGetCapabilities,
+                                                             NearlinkIpShareAsyncWork::CapabilitiesCallback);
 }
 
 napi_value GetNearlinkIpShareSupportedMaxTerminals(napi_env env, napi_callback_info info)
 {
-    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info,
-        FUNCTION_GET_NEARLINK_IPSHARE_SUPPORTED_MAX_TERMINALS, nullptr,
-        NearlinkIpShareAsyncWork::ExecGetSupportedMaxTerminals,
-        NearlinkIpShareAsyncWork::MaxTerminalsCallback);
+    return ModuleTemplate::Interface<NearlinkIpShareContext>(
+        env, info, FUNCTION_GET_NEARLINK_IPSHARE_SUPPORTED_MAX_TERMINALS, nullptr,
+        NearlinkIpShareAsyncWork::ExecGetSupportedMaxTerminals, NearlinkIpShareAsyncWork::MaxTerminalsCallback);
 }
 
 napi_value StartNearlinkGateway(napi_env env, napi_callback_info info)
 {
-    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_START_NEARLINK_GATEWAY,
-        nullptr, NearlinkIpShareAsyncWork::ExecStartGateway, NearlinkIpShareAsyncWork::VoidCallback);
+    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_START_NEARLINK_GATEWAY, nullptr,
+                                                             NearlinkIpShareAsyncWork::ExecStartGateway,
+                                                             NearlinkIpShareAsyncWork::VoidCallback);
 }
 
 napi_value StopNearlinkGateway(napi_env env, napi_callback_info info)
 {
-    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_STOP_NEARLINK_GATEWAY,
-        nullptr, NearlinkIpShareAsyncWork::ExecStopGateway, NearlinkIpShareAsyncWork::VoidCallback);
+    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_STOP_NEARLINK_GATEWAY, nullptr,
+                                                             NearlinkIpShareAsyncWork::ExecStopGateway,
+                                                             NearlinkIpShareAsyncWork::VoidCallback);
 }
 
 napi_value StartNearlinkTerminal(napi_env env, napi_callback_info info)
 {
-    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_START_NEARLINK_TERMINAL,
-        nullptr, NearlinkIpShareAsyncWork::ExecStartTerminal, NearlinkIpShareAsyncWork::VoidCallback);
+    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_START_NEARLINK_TERMINAL, nullptr,
+                                                             NearlinkIpShareAsyncWork::ExecStartTerminal,
+                                                             NearlinkIpShareAsyncWork::VoidCallback);
 }
 
 napi_value StopNearlinkTerminal(napi_env env, napi_callback_info info)
 {
-    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_STOP_NEARLINK_TERMINAL,
-        nullptr, NearlinkIpShareAsyncWork::ExecStopTerminal, NearlinkIpShareAsyncWork::VoidCallback);
+    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_STOP_NEARLINK_TERMINAL, nullptr,
+                                                             NearlinkIpShareAsyncWork::ExecStopTerminal,
+                                                             NearlinkIpShareAsyncWork::VoidCallback);
 }
 
 napi_value GetNearlinkIpShareStatus(napi_env env, napi_callback_info info)
 {
-    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_GET_NEARLINK_IPSHARE_STATUS,
-        nullptr, NearlinkIpShareAsyncWork::ExecGetStatus, NearlinkIpShareAsyncWork::StatusCallback);
+    return ModuleTemplate::Interface<NearlinkIpShareContext>(env, info, FUNCTION_GET_NEARLINK_IPSHARE_STATUS, nullptr,
+                                                             NearlinkIpShareAsyncWork::ExecGetStatus,
+                                                             NearlinkIpShareAsyncWork::StatusCallback);
 }
 
 napi_value On(napi_env env, napi_callback_info info)
 {
     std::initializer_list<std::string_view> events = {EVENT_SHARE_STATE_CHANGE, EVENT_IFACE_SHARE_STATE_CHANGE,
-                                                      EVENT_SHARE_UPSTREAM_CHANGE,
-                                                      EVENT_NEARLINK_IPSHARE_STATE_CHANGE};
+                                                      EVENT_SHARE_UPSTREAM_CHANGE, EVENT_NEARLINK_IPSHARE_STATE_CHANGE};
     return DelayedSingleton<NetShareObserverWrapper>::GetInstance()->On(env, info, events, false);
 }
 
 napi_value Off(napi_env env, napi_callback_info info)
 {
     std::initializer_list<std::string_view> events = {EVENT_SHARE_STATE_CHANGE, EVENT_IFACE_SHARE_STATE_CHANGE,
-                                                      EVENT_SHARE_UPSTREAM_CHANGE,
-                                                      EVENT_NEARLINK_IPSHARE_STATE_CHANGE};
+                                                      EVENT_SHARE_UPSTREAM_CHANGE, EVENT_NEARLINK_IPSHARE_STATE_CHANGE};
     return DelayedSingleton<NetShareObserverWrapper>::GetInstance()->Off(env, info, events, false);
 }
 
@@ -245,33 +249,31 @@ napi_value InitNetShareModule(napi_env env, napi_value exports)
 {
     InitProperties(env, exports);
 
-    NapiUtils::DefineProperties(env, exports,
-                                {
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_IS_SHARING_SUPPORTED, IsSharingSupported),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_IS_SHARING, IsSharing),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_START_SHARING, StartSharing),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_STOP_SHARING, StopSharing),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_GET_SHARING_IFACES, GetSharingIfaces),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_GET_SHARING_STATE, GetSharingState),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_GET_SHARABLE_REGEXES, GetSharableRegexes),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_GET_STATS_RX_BYTES, GetStatsRxBytes),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_GET_STATS_TX_BYTES, GetStatsTxBytes),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_GET_STATS_TOTAL_BYTES, GetStatsTotalBytes),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_IS_NEARLINK_IPSHARE_SUPPORTED,
-                                                          IsNearlinkIpShareSupported),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_GET_NEARLINK_IPSHARE_CAPABILITIES,
-                                                          GetNearlinkIpShareCapabilities),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_GET_NEARLINK_IPSHARE_SUPPORTED_MAX_TERMINALS,
-                                                          GetNearlinkIpShareSupportedMaxTerminals),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_START_NEARLINK_GATEWAY, StartNearlinkGateway),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_STOP_NEARLINK_GATEWAY, StopNearlinkGateway),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_START_NEARLINK_TERMINAL, StartNearlinkTerminal),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_STOP_NEARLINK_TERMINAL, StopNearlinkTerminal),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_GET_NEARLINK_IPSHARE_STATUS,
-                                                          GetNearlinkIpShareStatus),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_ON, On),
-                                    DECLARE_NAPI_FUNCTION(FUNCTION_OFF, Off),
-                                });
+    NapiUtils::DefineProperties(
+        env, exports,
+        {
+            DECLARE_NAPI_FUNCTION(FUNCTION_IS_SHARING_SUPPORTED, IsSharingSupported),
+            DECLARE_NAPI_FUNCTION(FUNCTION_IS_SHARING, IsSharing),
+            DECLARE_NAPI_FUNCTION(FUNCTION_START_SHARING, StartSharing),
+            DECLARE_NAPI_FUNCTION(FUNCTION_STOP_SHARING, StopSharing),
+            DECLARE_NAPI_FUNCTION(FUNCTION_GET_SHARING_IFACES, GetSharingIfaces),
+            DECLARE_NAPI_FUNCTION(FUNCTION_GET_SHARING_STATE, GetSharingState),
+            DECLARE_NAPI_FUNCTION(FUNCTION_GET_SHARABLE_REGEXES, GetSharableRegexes),
+            DECLARE_NAPI_FUNCTION(FUNCTION_GET_STATS_RX_BYTES, GetStatsRxBytes),
+            DECLARE_NAPI_FUNCTION(FUNCTION_GET_STATS_TX_BYTES, GetStatsTxBytes),
+            DECLARE_NAPI_FUNCTION(FUNCTION_GET_STATS_TOTAL_BYTES, GetStatsTotalBytes),
+            DECLARE_NAPI_FUNCTION(FUNCTION_IS_NEARLINK_IPSHARE_SUPPORTED, IsNearlinkIpShareSupported),
+            DECLARE_NAPI_FUNCTION(FUNCTION_GET_NEARLINK_IPSHARE_CAPABILITIES, GetNearlinkIpShareCapabilities),
+            DECLARE_NAPI_FUNCTION(FUNCTION_GET_NEARLINK_IPSHARE_SUPPORTED_MAX_TERMINALS,
+                                  GetNearlinkIpShareSupportedMaxTerminals),
+            DECLARE_NAPI_FUNCTION(FUNCTION_START_NEARLINK_GATEWAY, StartNearlinkGateway),
+            DECLARE_NAPI_FUNCTION(FUNCTION_STOP_NEARLINK_GATEWAY, StopNearlinkGateway),
+            DECLARE_NAPI_FUNCTION(FUNCTION_START_NEARLINK_TERMINAL, StartNearlinkTerminal),
+            DECLARE_NAPI_FUNCTION(FUNCTION_STOP_NEARLINK_TERMINAL, StopNearlinkTerminal),
+            DECLARE_NAPI_FUNCTION(FUNCTION_GET_NEARLINK_IPSHARE_STATUS, GetNearlinkIpShareStatus),
+            DECLARE_NAPI_FUNCTION(FUNCTION_ON, On),
+            DECLARE_NAPI_FUNCTION(FUNCTION_OFF, Off),
+        });
     NapiUtils::SetEnvValid(env);
     napi_add_env_cleanup_hook(env, NapiUtils::HookForEnvCleanup, env);
     return exports;

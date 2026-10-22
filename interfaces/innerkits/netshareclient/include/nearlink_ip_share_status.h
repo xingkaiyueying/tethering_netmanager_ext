@@ -19,8 +19,8 @@
 #include <new>
 #include <string>
 
-#include "parcel.h"
 #include "nearlink_ip_share_family.h"
+#include "parcel.h"
 
 namespace OHOS::NetManagerStandard {
 enum class NearlinkIpShareRole : int32_t {
@@ -51,31 +51,49 @@ public:
     std::vector<int32_t> localModes{1, 3}, peerModes;
     bool Marshalling(Parcel &p) const override
     {
-        if (!p.WriteBool(identifierPresent) || !p.WriteInt32(discoveryState)) return false;
+        if (!p.WriteBool(identifierPresent) || !p.WriteInt32(discoveryState)) {
+            return false;
+        }
         for (const auto *modes : {&localModes, &peerModes}) {
-            if (modes->size() > 2 || !p.WriteUint32(modes->size())) return false;
-            for (auto mode : *modes) if ((mode != 1 && mode != 3) || !p.WriteInt32(mode)) return false;
+            if (modes->size() > 2 || !p.WriteUint32(modes->size())) {
+                return false;
+            }
+            for (auto mode : *modes) {
+                if ((mode != 1 && mode != 3) || !p.WriteInt32(mode)) {
+                    return false;
+                }
+            }
         }
         return p.WriteBool(peerCapabilityKnown);
     }
     static NearlinkIpShareCapabilities *Unmarshalling(Parcel &p)
     {
         auto value = new (std::nothrow) NearlinkIpShareCapabilities;
-        if (!value) return nullptr;
+        if (!value) {
+            return nullptr;
+        }
         bool ok = p.ReadBool(value->identifierPresent) && p.ReadInt32(value->discoveryState) &&
-            value->discoveryState >= 0 && value->discoveryState <= 2;
+                  value->discoveryState >= 0 && value->discoveryState <= 2;
         for (auto *modes : {&value->localModes, &value->peerModes}) {
             uint32_t size = 0;
             ok = ok && p.ReadUint32(size) && size <= 2;
-            if (!ok) break;
+            if (!ok) {
+                break;
+            }
             modes->clear();
             for (uint32_t i = 0; i < size; ++i) {
                 int32_t mode;
-                if (!p.ReadInt32(mode) || (mode != 1 && mode != 3)) { ok = false; break; }
+                if (!p.ReadInt32(mode) || (mode != 1 && mode != 3)) {
+                    ok = false;
+                    break;
+                }
                 modes->push_back(mode);
             }
         }
-        if (!ok || !p.ReadBool(value->peerCapabilityKnown)) { delete value; return nullptr; }
+        if (!ok || !p.ReadBool(value->peerCapabilityKnown)) {
+            delete value;
+            return nullptr;
+        }
         return value;
     }
 };
@@ -90,35 +108,34 @@ struct NearlinkIpSharePeerStatus {
     bool Valid() const
     {
         return slot < 32 && generation && peerId.size() <= 64 && contextId.size() <= 128 &&
-            ifaceName == "sleip" + std::to_string(slot) && state >= 0 && state <= 5 &&
-            (selectedMode == 1 || selectedMode == 3) && ipv4.Valid(false) && ipv6.Valid(true);
+               ifaceName == "sleip" + std::to_string(slot) && state >= 0 && state <= 5 &&
+               (selectedMode == 1 || selectedMode == 3) && ipv4.Valid(false) && ipv6.Valid(true);
     }
     bool Write(Parcel &p) const
     {
         return Valid() && p.WriteUint32(slot) && p.WriteString(peerId) && p.WriteString(contextId) &&
-            p.WriteString(ifaceName) && p.WriteUint64(generation) && p.WriteUint64(sequence) &&
-            p.WriteInt32(state) && p.WriteInt32(selectedMode) && p.WriteBool(hasUpstream) &&
-            ipv4.Write(p) && ipv6.Write(p);
+               p.WriteString(ifaceName) && p.WriteUint64(generation) && p.WriteUint64(sequence) &&
+               p.WriteInt32(state) && p.WriteInt32(selectedMode) && p.WriteBool(hasUpstream) && ipv4.Write(p) &&
+               ipv6.Write(p);
     }
     bool Read(Parcel &p)
     {
-        return p.ReadUint32(slot) && p.ReadString(peerId) && p.ReadString(contextId) &&
-            p.ReadString(ifaceName) && p.ReadUint64(generation) && p.ReadUint64(sequence) &&
-            p.ReadInt32(state) && p.ReadInt32(selectedMode) && p.ReadBool(hasUpstream) &&
-            ipv4.Read(p) && ipv6.Read(p) && Valid();
+        return p.ReadUint32(slot) && p.ReadString(peerId) && p.ReadString(contextId) && p.ReadString(ifaceName) &&
+               p.ReadUint64(generation) && p.ReadUint64(sequence) && p.ReadInt32(state) && p.ReadInt32(selectedMode) &&
+               p.ReadBool(hasUpstream) && ipv4.Read(p) && ipv6.Read(p) && Valid();
     }
 };
 
 class NearlinkIpShareStatus final : public Parcelable {
 public:
-    NearlinkIpShareRole role {NearlinkIpShareRole::NONE};
-    NearlinkIpShareState state {NearlinkIpShareState::IDLE};
+    NearlinkIpShareRole role{NearlinkIpShareRole::NONE};
+    NearlinkIpShareState state{NearlinkIpShareState::IDLE};
     std::string peerAddress;
     std::string ifaceName;
     std::string ipv4Address;
-    bool hasUpstream {false};
+    bool hasUpstream{false};
     std::string errorStage;
-    int32_t errorCode {0};
+    int32_t errorCode{0};
 
     std::string contextId, fallbackReason;
     uint64_t generation{0}, sequence{0};
@@ -135,13 +152,17 @@ public:
         if (supportedMaxTerminals < 0 || supportedMaxTerminals > 32 || maxTerminals < 0 ||
             maxTerminals > supportedMaxTerminals || peers.size() > static_cast<size_t>(maxTerminals) ||
             occupiedTerminals != peers.size() || activeTerminals > occupiedTerminals ||
-            (role != NearlinkIpShareRole::GATEWAY && (maxTerminals || !peers.empty()))) return false;
+            (role != NearlinkIpShareRole::GATEWAY && (maxTerminals || !peers.empty()))) {
+            return false;
+        }
         uint32_t active = 0, previous = 0;
         bool first = true;
         for (const auto &peer : peers) {
             if (!peer.Valid() || peer.slot >= static_cast<uint32_t>(maxTerminals) ||
-                (peer.selectedMode & requestedMode) != peer.selectedMode ||
-                peer.sequence != sequence || (!first && peer.slot <= previous)) return false;
+                (peer.selectedMode & requestedMode) != peer.selectedMode || peer.sequence != sequence ||
+                (!first && peer.slot <= previous)) {
+                return false;
+            }
             active += peer.state == 2;
             first = false;
             previous = peer.slot;
@@ -152,43 +173,48 @@ public:
     bool Marshalling(Parcel &parcel) const override
     {
         return ValidPeers() && peerAddress.size() <= 17 && ifaceName.size() <= 15 && ipv4Address.size() <= 15 &&
-            errorStage.size() <= 31 && contextId.size() <= 64 && fallbackReason.size() <= 128 &&
-            ipv4.Valid(false) && ipv6.Valid(true) && parcel.WriteInt32(static_cast<int32_t>(role)) && parcel.WriteInt32(static_cast<int32_t>(state)) &&
-            parcel.WriteString(peerAddress) && parcel.WriteString(ifaceName) && parcel.WriteString(ipv4Address) &&
-            parcel.WriteBool(hasUpstream) && parcel.WriteString(errorStage) && parcel.WriteInt32(errorCode) &&
-            parcel.WriteString(contextId) && parcel.WriteUint64(generation) && parcel.WriteUint64(sequence) &&
-            parcel.WriteInt32(requestedMode) && parcel.WriteInt32(selectedMode) && parcel.WriteString(fallbackReason) &&
-            parcel.WriteInt32(netId) && parcel.WriteBool(serviceReady) && ipv4.Write(parcel) && ipv6.Write(parcel) &&
-            parcel.WriteInt32(supportedMaxTerminals) && parcel.WriteInt32(maxTerminals) &&
-            parcel.WriteUint32(occupiedTerminals) && parcel.WriteUint32(activeTerminals) &&
-            NearlinkIpShareFamilyStatus::WriteList(parcel, peers, 32) && parcel.GetDataSize() <= 256 * 1024;
+               errorStage.size() <= 31 && contextId.size() <= 64 && fallbackReason.size() <= 128 && ipv4.Valid(false) &&
+               ipv6.Valid(true) && parcel.WriteInt32(static_cast<int32_t>(role)) &&
+               parcel.WriteInt32(static_cast<int32_t>(state)) && parcel.WriteString(peerAddress) &&
+               parcel.WriteString(ifaceName) && parcel.WriteString(ipv4Address) && parcel.WriteBool(hasUpstream) &&
+               parcel.WriteString(errorStage) && parcel.WriteInt32(errorCode) && parcel.WriteString(contextId) &&
+               parcel.WriteUint64(generation) && parcel.WriteUint64(sequence) && parcel.WriteInt32(requestedMode) &&
+               parcel.WriteInt32(selectedMode) && parcel.WriteString(fallbackReason) && parcel.WriteInt32(netId) &&
+               parcel.WriteBool(serviceReady) && ipv4.Write(parcel) && ipv6.Write(parcel) &&
+               parcel.WriteInt32(supportedMaxTerminals) && parcel.WriteInt32(maxTerminals) &&
+               parcel.WriteUint32(occupiedTerminals) && parcel.WriteUint32(activeTerminals) &&
+               NearlinkIpShareFamilyStatus::WriteList(parcel, peers, 32) && parcel.GetDataSize() <= 256 * 1024;
     }
 
     bool ReadFromParcel(Parcel &parcel)
     {
         // 32 seats with the bounded address/route/DNS lists fit in this IPC budget.
-        if (parcel.GetDataSize() > 256 * 1024) return false;
+        if (parcel.GetDataSize() > 256 * 1024) {
+            return false;
+        }
         NearlinkIpShareStatus next;
         int32_t roleValue, stateValue;
-        if (!parcel.ReadInt32(roleValue) || roleValue < 0 || roleValue > 2 ||
-            !parcel.ReadInt32(stateValue) || stateValue < 0 || stateValue > 11 ||
-            !parcel.ReadString(next.peerAddress) || next.peerAddress.size() > 17 ||
-            !parcel.ReadString(next.ifaceName) || next.ifaceName.size() > 15 ||
-            !parcel.ReadString(next.ipv4Address) || next.ipv4Address.size() > 15 ||
-            !parcel.ReadBool(next.hasUpstream) || !parcel.ReadString(next.errorStage) || next.errorStage.size() > 31 ||
-            !parcel.ReadInt32(next.errorCode) || !parcel.ReadString(next.contextId) || next.contextId.size() > 64 ||
-            !parcel.ReadUint64(next.generation) || !parcel.ReadUint64(next.sequence) ||
+        if (!parcel.ReadInt32(roleValue) || roleValue < 0 || roleValue > 2 || !parcel.ReadInt32(stateValue) ||
+            stateValue < 0 || stateValue > 11 || !parcel.ReadString(next.peerAddress) || next.peerAddress.size() > 17 ||
+            !parcel.ReadString(next.ifaceName) || next.ifaceName.size() > 15 || !parcel.ReadString(next.ipv4Address) ||
+            next.ipv4Address.size() > 15 || !parcel.ReadBool(next.hasUpstream) || !parcel.ReadString(next.errorStage) ||
+            next.errorStage.size() > 31 || !parcel.ReadInt32(next.errorCode) || !parcel.ReadString(next.contextId) ||
+            next.contextId.size() > 64 || !parcel.ReadUint64(next.generation) || !parcel.ReadUint64(next.sequence) ||
             !parcel.ReadInt32(next.requestedMode) || (next.requestedMode != 1 && next.requestedMode != 3) ||
             !parcel.ReadInt32(next.selectedMode) ||
             (next.selectedMode != 0 && next.selectedMode != 1 && next.selectedMode != 3) ||
             !parcel.ReadString(next.fallbackReason) || next.fallbackReason.size() > 128 ||
-            !parcel.ReadInt32(next.netId) || !parcel.ReadBool(next.serviceReady) ||
-            !next.ipv4.Read(parcel) || !next.ipv6.Read(parcel) || !next.ipv4.Valid(false) || !next.ipv6.Valid(true)) return false;
+            !parcel.ReadInt32(next.netId) || !parcel.ReadBool(next.serviceReady) || !next.ipv4.Read(parcel) ||
+            !next.ipv6.Read(parcel) || !next.ipv4.Valid(false) || !next.ipv6.Valid(true)) {
+            return false;
+        }
         next.role = static_cast<NearlinkIpShareRole>(roleValue);
         next.state = static_cast<NearlinkIpShareState>(stateValue);
         if (!parcel.ReadInt32(next.supportedMaxTerminals) || !parcel.ReadInt32(next.maxTerminals) ||
             !parcel.ReadUint32(next.occupiedTerminals) || !parcel.ReadUint32(next.activeTerminals) ||
-            !NearlinkIpShareFamilyStatus::ReadList(parcel, next.peers, 32) || !next.ValidPeers()) return false;
+            !NearlinkIpShareFamilyStatus::ReadList(parcel, next.peers, 32) || !next.ValidPeers()) {
+            return false;
+        }
         *this = next;
         return true;
     }

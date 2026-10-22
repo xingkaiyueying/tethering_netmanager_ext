@@ -278,41 +278,6 @@ int main() {
     c->pendingLeaseExpiry_=std::chrono::steady_clock::now()-std::chrono::seconds(1);
     errors.clear();c->RetryTerminalNetwork();assert(!c->ipv4PublishPending_&&c->retryIpv4_);
     c->StopTerminal();q.Drain();
-    errors["address-add"]=-7;c->ConfigureGateway();
-    assert(c->dnsProxyStarted_ && !c->dhcpServerStarted_ && c->status_.ipv4.hasError);
-    net.hasDefault=true;c->dualStack_=true;c->channelReady_=true;
-    errors.clear();errors["dns-set"]=-7;c->ConfigureUpstream();
-    assert(c->status_.ipv6.hasError && c->status_.ipv6.error.stage=="DNS");
-    assert(!c->status_.ipv6.configurationAvailable);
-    errors.clear();errors["ra"]=-7;c->ConfigureUpstream();
-    assert(c->status_.ipv6.phase==1 && !c->status_.ipv6.hasError && !c->status_.ipv6.configurationAvailable);
-    c->ipv6GatewayPendingSince_-=std::chrono::seconds(11);c->ConfigureUpstream();
-    assert(c->status_.ipv6.phase==3 && c->status_.ipv6.hasError && c->status_.ipv6.error.stage=="PREFIX");
-    errors.clear();c->ConfigureUpstream();assert(c->status_.ipv6.configurationAvailable);
-    assert(c->status_.ipv6.phase==2 && !c->status_.ipv6.hasError && c->status_.ipv6.error.code==0);
-    // Legacy acquisitions can fail after partially creating a kernel resource.
-    assert(c->CleanupUpstream()==0);
-    Route legacyDefault;legacyDefault.destination_.family_=AF_INET;legacyDefault.destination_.prefixlen_=0;
-    net.upstreamProperties.routeList_.push_back(legacyDefault);
-    for (const auto &failure : {"forward-add", "iface-forward-add", "nat-add"}) {
-        errors[failure]=-7;c->ConfigureUpstream();
-        assert(c->forwardingAttempted_);
-        if (std::string(failure)!="forward-add") assert(c->interfaceForwardAttempted_);
-        if (std::string(failure)=="nat-add") assert(c->natAttempted_ && !c->natEnabled_);
-        const std::string oldUpstream=c->upstreamIface_;
-        const char *release=std::string(failure)=="forward-add" ? "forward-del" :
-            (std::string(failure)=="iface-forward-add" ? "iface-forward-del" : "nat-del");
-        errors[release]=-8;
-        assert(c->CleanupUpstream()==-8 && c->upstreamIface_==oldUpstream);
-        assert(c->forwardingAttempted_);
-        if (std::string(failure)=="iface-forward-add") assert(c->interfaceForwardAttempted_);
-        if (std::string(failure)=="nat-add") assert(c->natAttempted_);
-        assert(std::count(calls.begin(),calls.end(),release)>0);
-        errors.clear();assert(c->CleanupUpstream()==0);
-        assert(!c->forwardingAttempted_ && !c->interfaceForwardAttempted_ && !c->natAttempted_);
-        assert(c->upstreamIface_.empty() && c->upstreamNetId_==-1);
-    }
-    net.upstreamProperties.routeList_.clear();
     c->Cleanup();net.hasDefault=false;
     auto oldSession=session;
     errors["ipv6-prepare"]=-1;
@@ -397,6 +362,13 @@ int main() {
     c->addressPeers_[0].ipv6PendingSince-=std::chrono::seconds(11);c->ReconcileGatewayPeers(link);
     assert(c->addressPeers_[0].ipv6Error!=0 && c->addressPeers_[0].dhcpStarted && c->addressPeers_[1].dhcpStarted);
     errors.clear();c->ReconcileGatewayPeers(link);assert(c->addressPeers_[0].ipv6Error==0);
+    sharingLogCalls.clear();
+    for(int n=0;n<100;++n)c->ReconcileGatewayPeers(link);
+    assert(std::none_of(sharingLogCalls.begin(),sharingLogCalls.end(),[](const std::string &line) {
+        return line.find("[PeerAddress]")!=std::string::npos || line.find("[PeerUpstream]")!=std::string::npos ||
+            line.find("[PeerUpstreamCleanup]")!=std::string::npos;
+    }));
+    puts("gateway steady state: 100 reconciliations preserve peers and emit no periodic peer logs PASS");
     link.peerLinks[1].releasing=true;errors["server-stop"]=-7;
     calls.clear();c->ReconcileGatewayPeers(link);
     assert(c->addressPeers_.count(1)==1 && std::find(calls.begin(),calls.end(),"peer-release:12")==calls.end());

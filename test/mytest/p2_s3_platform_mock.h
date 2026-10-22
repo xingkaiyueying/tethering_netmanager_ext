@@ -31,7 +31,8 @@ namespace NetsysNative { struct InterfaceConfigurationParcel { std::string ifNam
 constexpr int NETMANAGER_EXT_ERR_LOCAL_PTR_NULL=-3, DHCP_SUCCESS=0;
 inline int MockStrcpyS(char *d, size_t n, const char *s) { if(strlen(s)>=n) return -1; strcpy(d,s); return 0; }
 #define strcpy_s MockStrcpyS
-#define NETMGR_EXT_LOG_I(...) ((void)0)
+inline std::vector<std::string> sharingLogCalls;
+#define NETMGR_EXT_LOG_I(format, ...) sharingLogCalls.emplace_back(format)
 #define NETMGR_EXT_LOG_E(...) ((void)0)
 #include "nearlink_ip_share_status.h"
 namespace OHOS::NetManagerStandard {
@@ -39,11 +40,7 @@ class INearlinkIpShareEventCallback {
 public: virtual void OnNearlinkIpShareStateChanged(const NearlinkIpShareStatus &) {}
 };
 class NetworkShareConfiguration {
-    std::string gateway="192.168.77.1", start="192.168.77.2", end="192.168.77.20";
 public:
-    const std::string &GetNearlinkIpv4Addr() { return gateway; }
-    const std::string &GetNearlinkDhcpStart() { return start; }
-    const std::string &GetNearlinkDhcpEnd() { return end; }
     std::string pool4="172.24.0.0/16", pool6="fd77:6e6c:6970::/48", routedPool, routedUpstream;
     const std::string &GetNearlinkIpv6RoutedPool()const{return routedPool;}
     const std::string &GetNearlinkIpv6RoutedUpstream()const{return routedUpstream;}
@@ -199,7 +196,6 @@ public:
     int CompleteGatewayPeerRelease(uint64_t g) { calls.push_back("peer-release:"+std::to_string(g));return 0; }
     int GetStatus(NearlinkIpShareStatus &s) { s=snapshot; return call("snapshot"); }
     int QueryNearlinkIpShareCapabilities(const std::string &, NearlinkIpShareCapabilities &) { return 0; }
-    int StartNearlinkGatewayWithMode(const std::string &peer, int) { return StartGateway(peer); }
     int gatewayCapacity=0, supportedMaxTerminals=2;
     int StartGatewayAny(int, int capacity) { gatewayCapacity=capacity;return call("nearlink-start"); }
     int GetSupportedMaxTerminals() { return supportedMaxTerminals; }
@@ -213,7 +209,6 @@ public:
         return 0;
     }
     int UnregisterObserver() { return 0; }
-    int StartGateway(const std::string &) { return call("nearlink-start"); }
     int StartTerminal(const std::string &) { return call("nearlink-start"); }
     bool drainOnStop=true;
     int Stop() {

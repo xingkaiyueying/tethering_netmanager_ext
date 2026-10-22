@@ -46,8 +46,8 @@ void NearlinkIpShareContext::ParseParams(napi_value *params, size_t paramsCount)
         auto mode = NapiUtils::GetStringFromValueUtf8(GetEnv(), modeValue);
         double capacity = 0;
         if ((mode != "IPV4" && mode != "DUAL_STACK") ||
-            napi_get_value_double(GetEnv(), maxValue, &capacity) != napi_ok ||
-            !std::isfinite(capacity) || std::floor(capacity) != capacity || capacity < 1 || capacity > 32) {
+            napi_get_value_double(GetEnv(), maxValue, &capacity) != napi_ok || !std::isfinite(capacity) ||
+            std::floor(capacity) != capacity || capacity < 1 || capacity > 32) {
             SetErrorCode(NETMANAGER_EXT_ERR_PARAMETER_ERROR);
             SetNeedThrowException(true);
             return;
@@ -104,14 +104,38 @@ void NearlinkIpShareContext::ParseParams(napi_value *params, size_t paramsCount)
     SetParseOK(true);
 }
 
-int32_t NearlinkIpShareContext::GetMode() const { return mode_; }
-bool NearlinkIpShareContext::HasMode() const { return hasMode_; }
-bool NearlinkIpShareContext::HasMaxTerminals() const { return hasMaxTerminals_; }
-int32_t NearlinkIpShareContext::GetMaxTerminals() const { return maxTerminals_; }
-void NearlinkIpShareContext::SetSupportedMaxTerminals(int32_t value) { supportedMaxTerminals_ = value; }
-int32_t NearlinkIpShareContext::GetSupportedMaxTerminals() const { return supportedMaxTerminals_; }
-void NearlinkIpShareContext::SetCapabilities(const NearlinkIpShareCapabilities &value) { capabilities_ = value; }
-const NearlinkIpShareCapabilities &NearlinkIpShareContext::GetCapabilities() const { return capabilities_; }
+int32_t NearlinkIpShareContext::GetMode() const
+{
+    return mode_;
+}
+bool NearlinkIpShareContext::HasMode() const
+{
+    return hasMode_;
+}
+bool NearlinkIpShareContext::HasMaxTerminals() const
+{
+    return hasMaxTerminals_;
+}
+int32_t NearlinkIpShareContext::GetMaxTerminals() const
+{
+    return maxTerminals_;
+}
+void NearlinkIpShareContext::SetSupportedMaxTerminals(int32_t value)
+{
+    supportedMaxTerminals_ = value;
+}
+int32_t NearlinkIpShareContext::GetSupportedMaxTerminals() const
+{
+    return supportedMaxTerminals_;
+}
+void NearlinkIpShareContext::SetCapabilities(const NearlinkIpShareCapabilities &value)
+{
+    capabilities_ = value;
+}
+const NearlinkIpShareCapabilities &NearlinkIpShareContext::GetCapabilities() const
+{
+    return capabilities_;
+}
 
 const std::string &NearlinkIpShareContext::GetPeerAddress() const
 {

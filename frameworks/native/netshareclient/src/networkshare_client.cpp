@@ -307,14 +307,16 @@ int32_t NetworkShareClient::SetConfigureForShare(bool enabled)
 int32_t NetworkShareClient::IsNearlinkIpShareSupported(const std::string &peerAddress, bool &supported)
 {
     auto proxy = GetProxy();
-    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL :
-        proxy->IsNearlinkIpShareSupported(peerAddress, supported);
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL
+                            : proxy->IsNearlinkIpShareSupported(peerAddress, supported);
 }
 
-int32_t NetworkShareClient::QueryNearlinkIpShareCapabilities(const std::string &peerAddress, NearlinkIpShareCapabilities &capabilities)
+int32_t NetworkShareClient::QueryNearlinkIpShareCapabilities(const std::string &peerAddress,
+                                                             NearlinkIpShareCapabilities &capabilities)
 {
     auto proxy = GetProxy();
-    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->QueryNearlinkIpShareCapabilities(peerAddress, capabilities);
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL
+                            : proxy->QueryNearlinkIpShareCapabilities(peerAddress, capabilities);
 }
 
 int32_t NetworkShareClient::StartNearlinkGatewayAny(int32_t mode, int32_t maxTerminals)
@@ -326,26 +328,15 @@ int32_t NetworkShareClient::StartNearlinkGatewayAny(int32_t mode, int32_t maxTer
 int32_t NetworkShareClient::GetNearlinkIpShareSupportedMaxTerminals(int32_t &supportedMaxTerminals)
 {
     auto proxy = GetProxy();
-    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL :
-        proxy->GetNearlinkIpShareSupportedMaxTerminals(supportedMaxTerminals);
-}
-
-int32_t NetworkShareClient::StartNearlinkGatewayWithMode(const std::string &peerAddress, int32_t mode)
-{
-    auto proxy = GetProxy();
-    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->StartNearlinkGatewayWithMode(peerAddress, mode);
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL
+                            : proxy->GetNearlinkIpShareSupportedMaxTerminals(supportedMaxTerminals);
 }
 
 int32_t NetworkShareClient::StartNearlinkTerminalWithMode(const std::string &peerAddress, int32_t mode)
 {
     auto proxy = GetProxy();
-    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->StartNearlinkTerminalWithMode(peerAddress, mode);
-}
-
-int32_t NetworkShareClient::StartNearlinkGateway(const std::string &peerAddress)
-{
-    auto proxy = GetProxy();
-    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL : proxy->StartNearlinkGateway(peerAddress);
+    return proxy == nullptr ? NETMANAGER_EXT_ERR_GET_PROXY_FAIL
+                            : proxy->StartNearlinkTerminalWithMode(peerAddress, mode);
 }
 
 int32_t NetworkShareClient::StopNearlinkGateway()

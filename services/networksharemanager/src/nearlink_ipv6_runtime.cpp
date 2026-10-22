@@ -13,20 +13,20 @@
  * limitations under the License.
  */
 #include "nearlink_ipv6_runtime.h"
-#include <net/if.h>
-#include "netsys_controller.h"
 #include "netmgr_ext_log_wrapper.h"
-#include <arpa/inet.h>
+#include "netsys_controller.h"
 #include <algorithm>
+#include <arpa/inet.h>
 #include <array>
-#include <cerrno>
 #include <cctype>
-#include <cstring>
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <linux/if_link.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include <net/if.h>
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -42,12 +42,6 @@ constexpr int PREFIX_PREFERRED_SECONDS = 180;
 constexpr int LOCAL_NETWORK_ID = 99;
 constexpr unsigned UNUSABLE_ADDRESS_FLAGS = 0x04 | 0x08 | 0x40;
 constexpr unsigned UNUSABLE_UPSTREAM_FLAGS = UNUSABLE_ADDRESS_FLAGS | 0x20; // Deprecated source address.
-long long ConfigTimingMs()
-{
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
 bool RouteRemoved(int32_t result)
 {
     return result == 0 || result == -ESRCH;
@@ -130,8 +124,8 @@ bool DeriveDownstreamPrefix(const NetLinkInfo *upstream, in6_addr &downstream, s
         std::string hex, iface;
         unsigned index, length, scope, flags;
         while (kernel >> hex >> std::hex >> index >> length >> scope >> flags >> iface) {
-            if (iface != upstream->ifaceName_ || length != 64 || scope != 0 ||
-                (flags & UNUSABLE_UPSTREAM_FLAGS) || hex.size() != 32 ||
+            if (iface != upstream->ifaceName_ || length != 64 || scope != 0 || (flags & UNUSABLE_UPSTREAM_FLAGS) ||
+                hex.size() != 32 ||
                 !std::all_of(hex.begin(), hex.end(), [](unsigned char c) { return std::isxdigit(c); })) {
                 continue;
             }
@@ -158,8 +152,9 @@ bool DeriveDownstreamPrefix(const NetLinkInfo *upstream, in6_addr &downstream, s
         downstream.s6_addr[i] = static_cast<uint8_t>(carry);
         carry >>= 8;
     }
-    if (carry)
+    if (carry) {
         return false;
+    }
     auto conflicts = [&downstream](const auto &candidate) {
         return std::memcmp(candidate.s6_addr, downstream.s6_addr, 8) == 0;
     };
@@ -198,12 +193,7 @@ bool NearlinkIpv6Runtime::Set(const std::string &key, const std::string &value)
 }
 bool NearlinkIpv6Runtime::AddAddress(const std::string &address)
 {
-    auto started = ConfigTimingMs();
     int32_t ret = NetsysController::GetInstance().AddInterfaceAddress(iface_.c_str(), address, 64);
-    NETMGR_EXT_LOG_I("[NearlinkIpShare][ConfigTiming] stage=ADDR_ADD iface=%{public}s ifindex=%{public}u "
-                    "kind=%{public}s monoMs=%{public}lld elapsedMs=%{public}lld code=%{public}d",
-                    iface_.c_str(), ifindex_, address.compare(0, 5, "fe80:") == 0 ? "LINK_LOCAL" : "PREFIX",
-                    started, ConfigTimingMs() - started, ret);
     if (ret != 0) {
         return false; // Do not claim or later delete an address owned by someone else.
     }
@@ -270,8 +260,9 @@ bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2, const
                                   const std::string &prefix)
 {
     if (iface.size() < 6 || iface.size() >= IFNAMSIZ || iface.compare(0, 5, "sleip") != 0 ||
-        !std::all_of(iface.begin() + 5, iface.end(), [](char c) { return c >= '0' && c <= '9'; }))
+        !std::all_of(iface.begin() + 5, iface.end(), [](char c) { return c >= '0' && c <= '9'; })) {
         return false;
+    }
     if (prepared_) {
         return iface == iface_ && prefix == configuredPrefix_ && ifindex_ == if_nametoindex(iface_.c_str());
     }
@@ -289,8 +280,6 @@ bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2, const
     if (!ifindex_) {
         return false;
     }
-    NETMGR_EXT_LOG_I("[NearlinkIpShare][ConfigTiming] stage=PREPARE iface=%{public}s ifindex=%{public}u "
-                    "gateway=%{public}d monoMs=%{public}lld", iface_.c_str(), ifindex_, gateway, ConfigTimingMs());
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
         return false;
@@ -345,23 +334,33 @@ bool NearlinkIpv6Runtime::HasDefaultRouteOnInterface(const std::string &iface, i
     bool found = false;
     bool done = false;
     while (sent && !done) {
-        auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
-            deadline - std::chrono::steady_clock::now()).count();
-        if (left <= 0) break;
+        auto left =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        if (left <= 0) {
+            break;
+        }
         pollfd event{fd, POLLIN, 0};
         int ready = poll(&event, 1, static_cast<int>(left));
-        if (ready < 0 && errno == EINTR) continue;
-        if (ready <= 0 || !(event.revents & POLLIN)) break;
+        if (ready < 0 && errno == EINTR) {
+            continue;
+        }
+        if (ready <= 0 || !(event.revents & POLLIN)) {
+            break;
+        }
         alignas(nlmsghdr) char reply[8192]{};
         ssize_t size = recv(fd, reply, sizeof(reply), MSG_DONTWAIT);
-        if (size < 0 && (errno == EAGAIN || errno == EINTR)) continue;
+        if (size < 0 && (errno == EAGAIN || errno == EINTR)) {
+            continue;
+        }
         if (size <= 0) {
             break;
         }
         int remaining = static_cast<int>(size);
         for (auto *header = reinterpret_cast<nlmsghdr *>(reply); NLMSG_OK(header, remaining);
              header = NLMSG_NEXT(header, remaining)) {
-            if (header->nlmsg_seq != request.header.nlmsg_seq) continue;
+            if (header->nlmsg_seq != request.header.nlmsg_seq) {
+                continue;
+            }
             if (header->nlmsg_type == NLMSG_DONE || header->nlmsg_type == NLMSG_ERROR) {
                 done = true;
                 break;
@@ -393,8 +392,10 @@ bool NearlinkIpv6Runtime::HasDefaultRouteOnInterface(const std::string &iface, i
     }
     close(fd);
     if (sent && !done) {
-        NETMGR_EXT_LOG_W("[NearlinkIpShare][RouteQuery] iface=%{public}s family=%{public}d "
-                        "dump incomplete; default unavailable within deadline", iface.c_str(), family);
+        NETMGR_EXT_LOG_W(
+            "[NearlinkIpShare][RouteQuery] iface=%{public}s family=%{public}d "
+            "dump incomplete; default unavailable within deadline",
+            iface.c_str(), family);
     }
     return found;
 }
@@ -452,13 +453,15 @@ bool NearlinkIpv6Runtime::Advertise(const NetLinkInfo *upstream, bool forwarding
     // Use only the selected link; omitted link properties can be recovered from sysfs.
     int mtu = 1500;
     if (upstream) {
-        if (upstream->mtu_ >= 1280)
+        if (upstream->mtu_ >= 1280) {
             mtu = std::min(mtu, static_cast<int>(upstream->mtu_));
+        }
         if (!upstream->ifaceName_.empty()) {
             std::ifstream input("/sys/class/net/" + upstream->ifaceName_ + "/mtu");
             int kernelMtu = 0;
-            if (input >> kernelMtu && kernelMtu >= 1280)
+            if (input >> kernelMtu && kernelMtu >= 1280) {
                 mtu = std::min(mtu, kernelMtu);
+            }
         }
     }
     params.mtu_ = mtu;
@@ -552,10 +555,6 @@ bool NearlinkIpv6Runtime::PublishAdvertisement(const RaParams &params, const std
     }
     if (changed || lastRouterLifetime_ != params.routerLifetime_) {
         bool sent = daemon_->AdvertiseNow();
-        NETMGR_EXT_LOG_I("[NearlinkIpShare][ConfigTiming] stage=RA_IMMEDIATE iface=%{public}s ifindex=%{public}u "
-                        "monoMs=%{public}lld prefixes=%{public}zu dns=%{public}zu routerLifetime=%{public}u "
-                        "success=%{public}d", iface_.c_str(), ifindex_, ConfigTimingMs(), params.prefixes_.size(),
-                        params.dnses_.size(), static_cast<unsigned>(params.routerLifetime_), sent);
         if (!sent) {
             return false;
         }
@@ -602,9 +601,6 @@ bool NearlinkIpv6Runtime::SelectPrefix(std::string &prefix, std::string &dns, bo
         } else {
             prefix_ = prefix;
             gateway_ = dns;
-            timingGatewayFlags_ = -2;
-            timingGatewayReady_ = false;
-            timingGatewayAdded_ = {};
         }
     }
     return configured;
@@ -644,9 +640,6 @@ void NearlinkIpv6Runtime::ExpireRetiredPrefixes(std::chrono::steady_clock::time_
 bool NearlinkIpv6Runtime::ReconcileGatewayAddress()
 {
     if (!gatewayAddressOwned_) {
-        if (timingGatewayAdded_ == std::chrono::steady_clock::time_point{}) {
-            timingGatewayAdded_ = std::chrono::steady_clock::now();
-        }
         gatewayAddressOwned_ = AddAddress(gateway_);
     }
     if (gatewayAddressOwned_ && !routeOwned_) {
@@ -655,7 +648,6 @@ bool NearlinkIpv6Runtime::ReconcileGatewayAddress()
         routeOwned_ = ret == 0 || ret == -EEXIST;
     }
     bool usable = false;
-    int observedFlags = -1;
     std::ifstream kernel("/proc/net/if_inet6");
     std::string hex, iface;
     unsigned index, length, scope, flags;
@@ -667,25 +659,13 @@ bool NearlinkIpv6Runtime::ReconcileGatewayAddress()
     }
     while (kernel >> hex >> std::hex >> index >> length >> scope >> flags >> iface) {
         if (iface == iface_ && index == ifindex_ && hex == expectedHex) {
-            observedFlags = static_cast<int>(flags);
             if (!(flags & UNUSABLE_ADDRESS_FLAGS)) {
                 usable = true;
             }
         }
     }
     bool ready = !prefix_.empty() && gatewayAddressOwned_ && routeOwned_ && usable;
-    if (observedFlags != timingGatewayFlags_ || ready != timingGatewayReady_) {
-        auto elapsed = timingGatewayAdded_ == std::chrono::steady_clock::time_point{} ? -1LL :
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - timingGatewayAdded_).count();
-        NETMGR_EXT_LOG_I("[NearlinkIpShare][ConfigTiming] stage=GATEWAY_ADDR_OBSERVED iface=%{public}s "
-                        "ifindex=%{public}u monoMs=%{public}lld flags=%{public}d owned=%{public}d "
-                        "route=%{public}d ready=%{public}d elapsedMs=%{public}lld",
-                        iface_.c_str(), ifindex_, ConfigTimingMs(), observedFlags, gatewayAddressOwned_, routeOwned_,
-                        ready, static_cast<long long>(elapsed));
-        timingGatewayFlags_ = observedFlags;
-        timingGatewayReady_ = ready;
-    }
+
     return ready;
 }
 bool NearlinkIpv6Runtime::Cleanup()

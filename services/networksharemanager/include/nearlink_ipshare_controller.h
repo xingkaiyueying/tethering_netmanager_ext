@@ -15,21 +15,21 @@
 #ifndef NETMANAGER_EXT_NEARLINK_IPSHARE_CONTROLLER_H
 #define NETMANAGER_EXT_NEARLINK_IPSHARE_CONTROLLER_H
 
+#include "nearlink_peer_address_pool.h"
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <memory>
 #include <map>
-#include <set>
-#include "nearlink_peer_address_pool.h"
+#include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 
-#include "dhcp_result_event.h"
 #include "dhcp_l3_ipv6.h"
+#include "dhcp_result_event.h"
 #include "nearlink_family_network.h"
-#include "nearlink_ipv6_runtime.h"
 #include "nearlink_ip_share_status.h"
+#include "nearlink_ipv6_runtime.h"
 #include "networkshare_configuration.h"
 
 namespace OHOS::Nearlink {
@@ -49,7 +49,6 @@ public:
     bool Init();
     void Uninit();
     int32_t IsSupported(const std::string &peerAddress, bool &supported);
-    int32_t StartGateway(const std::string &peerAddress, int32_t mode = 1);
     int32_t StartGatewayAny(int32_t mode, int32_t maxTerminals);
     int32_t GetSupportedMaxTerminals(int32_t &supportedMaxTerminals);
     int32_t StopGateway();
@@ -72,7 +71,6 @@ private:
     void ContinueStop(uint32_t attempt);
     void RetryTerminalStart(uint32_t drainAttempt = 0);
     void HandleNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
-    void ConfigureGateway();
     void ReconcileGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
     void ConfigureGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
     struct PeerAddressContext {
@@ -100,8 +98,10 @@ private:
     int32_t ConfigureGatewayPeerIpv4(PeerAddressContext &peer, const NetLinkInfo *upstream);
     std::map<uint32_t, PeerAddressContext> addressPeers_;
     std::vector<NearlinkIpSharePeerStatus> gatewayPeerLinks_;
+    void ConfigureGatewayPeerAddress(PeerAddressContext &peer, const NetLinkInfo *upstream);
+    void ProjectGatewayPeerLocked(const PeerAddressContext &peer);
+    bool ConfigureGatewayPeerUpstream(PeerAddressContext &peer, const NetLinkInfo *upstream, bool present, bool hasV4);
     void RefreshGatewayStatusLocked();
-    int32_t ConfigureGatewayIpv4();
     void StartTerminalDhcp();
     void ConfigureUpstream();
     int32_t CleanupUpstream();
@@ -140,22 +140,13 @@ private:
     bool stopRequested_{false};
     std::atomic<uint64_t> generation_{0};
     bool gatewayReserved_{false};
-    bool multiGateway_{false};
     int32_t maxTerminals_{0};
     bool nearlinkStarted_{false};
     bool terminalRestartPending_{false};
-    bool localInterfaceAdded_{false};
-    bool localRouteAdded_{false};
-    bool addressConfigured_{false};
-    bool dhcpServerStarted_{false};
     bool dnsProxyStarted_{false};
     bool dnsUpstreamReady_{false};
     bool forwardingEnabled_{false};
     bool forwardingAttempted_{false};
-    bool interfaceForwarding_{false};
-    bool interfaceForwardAttempted_{false};
-    bool natEnabled_{false};
-    bool natAttempted_{false};
     bool dhcpClientStarted_{false};
     std::chrono::steady_clock::time_point leaseExpiry_{};
     uint32_t netSupplierId_{0};
@@ -172,8 +163,6 @@ private:
     bool supplierAvailable_{false};
     NearlinkIpv6Runtime ipv6Runtime_;
     bool ipv6Prepared_{false};
-    std::chrono::steady_clock::time_point ipv6GatewayPendingSince_{};
-    void ConfigureGatewayIpv6(const NetLinkInfo *upstream);
     DhcpL3Ipv6Snapshot ipv6Addresses_{};
     std::chrono::steady_clock::time_point ipv6Observed_{};
     DhcpResult ipv6Result_{};
@@ -186,7 +175,6 @@ private:
     std::array<uint8_t, 6> clientKey_{};
     void RetryTerminalDhcp();
     bool maintenancePending_{false};
-    std::chrono::steady_clock::time_point gatewayIfaceMissingSince_{};
 };
 } // namespace OHOS::NetManagerStandard
 #endif // NETMANAGER_EXT_NEARLINK_IPSHARE_CONTROLLER_H

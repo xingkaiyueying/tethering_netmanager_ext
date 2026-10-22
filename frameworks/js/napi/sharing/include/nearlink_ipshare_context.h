@@ -41,13 +41,13 @@ public:
 
 private:
     std::string peerAddress_;
-    int32_t mode_ {1};
-    bool hasMode_ {false};
-    bool hasMaxTerminals_ {false};
-    int32_t maxTerminals_ {0};
-    int32_t supportedMaxTerminals_ {0};
+    int32_t mode_{1};
+    bool hasMode_{false};
+    bool hasMaxTerminals_{false};
+    int32_t maxTerminals_{0};
+    int32_t supportedMaxTerminals_{0};
     NearlinkIpShareCapabilities capabilities_;
-    bool supported_ {false};
+    bool supported_{false};
     NearlinkIpShareStatus status_;
 };
 } // namespace OHOS::NetManagerStandard

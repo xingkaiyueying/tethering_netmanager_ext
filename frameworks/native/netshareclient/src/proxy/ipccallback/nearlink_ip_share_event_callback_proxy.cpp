@@ -40,8 +40,8 @@ void NearlinkIpShareEventCallbackProxy::OnNearlinkIpShareStateChanged(const Near
         return;
     }
     int32_t ret = remote->SendRequest(
-        static_cast<uint32_t>(INearlinkIpShareEventCallback::Message::NEARLINK_IP_SHARE_STATE_CHANGED),
-        data, reply, option);
+        static_cast<uint32_t>(INearlinkIpShareEventCallback::Message::NEARLINK_IP_SHARE_STATE_CHANGED), data, reply,
+        option);
     if (ret != ERR_NONE) {
         NETMGR_EXT_LOG_E("[NearlinkIpShare][Callback] send failed code=%{public}d", ret);
     }

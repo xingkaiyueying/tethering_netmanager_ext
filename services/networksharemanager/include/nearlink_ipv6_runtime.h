@@ -14,54 +14,57 @@
  */
 #ifndef NEARLINK_IPV6_RUNTIME_H
 #define NEARLINK_IPV6_RUNTIME_H
-#include <map>
+#include "net_link_info.h"
+#include "router_advertisement_daemon.h"
 #include <chrono>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
-#include "router_advertisement_daemon.h"
-#include "net_link_info.h"
 namespace OHOS::NetManagerStandard {
 // Owns only settings on the current sleip0 ifindex. Never executes shell commands.
 class NearlinkIpv6Runtime {
 public:
-  bool Prepare(bool gateway, const std::string &layer2, const std::string &iface = "sleip0",
-               const std::string &prefix = "");
-  bool Advertise(const NetLinkInfo *upstream, bool forwarding, bool dnsReady = true);
-  // Start the first prefix's local address/DAD without publishing an RA.
-  void PrepareGatewayAddress();
-  void SetGatewayPrefix(const std::string &prefix)
-  {
-      configuredPrefix_ = prefix;
-  }
-  static std::string DeriveGatewayPrefix(const NetLinkInfo *upstream, uint32_t slot);
-  static bool HasDefaultRouteOnInterface(const std::string &iface, int32_t family);
-  bool HasDefaultRouter() const
-  {
-      return lastRouterLifetime_ > 0;
-  }
-  bool OwnsPrefix(const std::string &prefix) const
-  {
-      if (prefix == prefix_)
-          return true;
-      for (const auto &old : retired_)
-          if (old.prefix == prefix)
-              return true;
-      return false;
-  }
-  bool Cleanup();
-  bool HasPrefix() const
-  {
-      return !prefix_.empty();
-  }
-  const std::string &CurrentPrefix() const
-  {
-      return prefix_;
-  }
-  bool CanAdmitPrefix(const std::string &prefix) const
-  {
-      return OwnsPrefix(prefix) || retired_.size() + (HasPrefix() ? 1 : 0) < 4;
-  }
+    bool Prepare(bool gateway, const std::string &layer2, const std::string &iface = "sleip0",
+                 const std::string &prefix = "");
+    bool Advertise(const NetLinkInfo *upstream, bool forwarding, bool dnsReady = true);
+    // Start the first prefix's local address/DAD without publishing an RA.
+    void PrepareGatewayAddress();
+    void SetGatewayPrefix(const std::string &prefix)
+    {
+        configuredPrefix_ = prefix;
+    }
+    static std::string DeriveGatewayPrefix(const NetLinkInfo *upstream, uint32_t slot);
+    static bool HasDefaultRouteOnInterface(const std::string &iface, int32_t family);
+    bool HasDefaultRouter() const
+    {
+        return lastRouterLifetime_ > 0;
+    }
+    bool OwnsPrefix(const std::string &prefix) const
+    {
+        if (prefix == prefix_) {
+            return true;
+        }
+        for (const auto &old : retired_) {
+            if (old.prefix == prefix) {
+                return true;
+            }
+        }
+        return false;
+    }
+    bool Cleanup();
+    bool HasPrefix() const
+    {
+        return !prefix_.empty();
+    }
+    const std::string &CurrentPrefix() const
+    {
+        return prefix_;
+    }
+    bool CanAdmitPrefix(const std::string &prefix) const
+    {
+        return OwnsPrefix(prefix) || retired_.size() + (HasPrefix() ? 1 : 0) < 4;
+    }
     const std::string &Gateway() const
     {
         return gateway_;
@@ -89,9 +92,6 @@ private:
     std::vector<Retired> retired_;
     int lastRouterLifetime_{-1}, lastMtu_{-1};
     // Diagnostic state only; readiness continues to use the kernel flags below.
-    int timingGatewayFlags_{-2};
-    bool timingGatewayReady_{false};
-    std::chrono::steady_clock::time_point timingGatewayAdded_{};
     std::map<std::string, std::string> settings_;
     std::vector<std::string> addresses_;
     std::string layer2_, prefix_, gateway_, dns_, advertisedPrefix_;

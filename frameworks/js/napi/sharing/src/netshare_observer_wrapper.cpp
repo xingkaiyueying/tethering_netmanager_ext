@@ -108,8 +108,8 @@ napi_value NetShareObserverWrapper::Off(napi_env env, napi_callback_info info,
 
     if (event == EVENT_NEARLINK_IPSHARE_STATE_CHANGE && nearlinkRegisted_ &&
         !manager_->HasEventListener(static_cast<std::string>(EVENT_NEARLINK_IPSHARE_STATE_CHANGE))) {
-        int32_t result = DelayedSingleton<NetworkShareClient>::GetInstance()->UnregisterNearlinkIpShareEvent(
-            nearlinkObserver_);
+        int32_t result =
+            DelayedSingleton<NetworkShareClient>::GetInstance()->UnregisterNearlinkIpShareEvent(nearlinkObserver_);
         if (result != NETMANAGER_EXT_SUCCESS) {
             napi_throw_error(env, std::to_string(result).c_str(), "Unregister NearLink event failed");
             return NapiUtils::GetUndefined(env);
@@ -158,8 +158,8 @@ int32_t NetShareObserverWrapper::RegisterNearlink()
 bool NetShareObserverWrapper::HasSharingEventListener() const
 {
     return manager_->HasEventListener(static_cast<std::string>(EVENT_SHARE_STATE_CHANGE)) ||
-        manager_->HasEventListener(static_cast<std::string>(EVENT_IFACE_SHARE_STATE_CHANGE)) ||
-        manager_->HasEventListener(static_cast<std::string>(EVENT_SHARE_UPSTREAM_CHANGE));
+           manager_->HasEventListener(static_cast<std::string>(EVENT_IFACE_SHARE_STATE_CHANGE)) ||
+           manager_->HasEventListener(static_cast<std::string>(EVENT_SHARE_UPSTREAM_CHANGE));
 }
 } // namespace NetManagerStandard
 } // namespace OHOS

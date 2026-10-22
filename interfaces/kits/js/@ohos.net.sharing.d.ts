@@ -102,7 +102,6 @@ declare namespace sharing {
   /** Promise resolution means that the request was accepted; observe or query status for completion. */
   function isNearlinkIpShareSupported(peerAddress: string): Promise<boolean>;
   function getNearlinkIpShareCapabilities(peerAddress: string): Promise<NearlinkIpShareCapabilities>;
-  function startNearlinkGateway(peerAddress: string, options?: NearlinkIpShareStartOptions): Promise<void>;
   function startNearlinkGateway(options: NearlinkGatewayOptions): Promise<void>;
   /** Returns the upper bound accepted by gateway options; does not measure radio concurrency. */
   function getNearlinkIpShareSupportedMaxTerminals(): Promise<number>;

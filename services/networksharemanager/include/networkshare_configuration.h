@@ -51,7 +51,6 @@ public:
      * is bluetooth iface by regex
      */
     bool IsBluetoothIface(const std::string &iface);
-    bool IsNearlinkIface(const std::string &iface);
 
     /**
      * get usb iface regex
@@ -67,7 +66,6 @@ public:
      * get bluetooth iface regex
      */
     const std::vector<std::string> &GetBluetoothIfaceRegexs();
-    const std::vector<std::string> &GetNearlinkIfaceRegexs();
 
     /**
      * get wifi hotspot set dhcp flag
@@ -123,9 +121,6 @@ public:
      * get dhcp endIP
      */
     std::string &GetDhcpEndIP();
-    std::string &GetNearlinkIpv4Addr();
-    std::string &GetNearlinkDhcpStart();
-    std::string &GetNearlinkDhcpEnd();
     const std::string &GetNearlinkIpv4Pool() const
     {
         return nearlinkIpv4Pool_;
@@ -156,57 +151,49 @@ private:
     void ParseRegexsData(std::vector<std::string> &regexs, std::string &strVal);
 
 private:
-  enum class Config_Value {
-      CONFIG_VALUE_SHARE_SUPPORT,
-      CONFIG_VALUE_USB_REGEXS,
-      CONFIG_VALUE_WIFI_REGEXS,
-      CONFIG_VALUE_BLUETOOTH_REGEXS,
-      CONFIG_VALUE_BT_PAN_ADDR,
-      CONFIG_VALUE_WIFI_HOTSPOT_ADDR,
-      CONFIG_VALUE_USB_RNDIS_ADDR,
-      CONFIG_VALUE_BT_PAN_DHCP_NAME,
-      CONFIG_VALUE_WIFI_DHCP_NAME,
-      CONFIG_VALUE_USB_DHCP_NAME,
-      CONFIG_VALUE_USB_IFACE_NAME,
-      CONFIG_VALUE_ROUTE_SUFFIX,
-      CONFIG_VALUE_DHCP_ENDIP,
-      CONFIG_VALUE_DEFAULT_MASK,
-      CONFIG_VALUE_WIFI_SET_DHCP,
-      CONFIG_VALUE_NEARLINK_REGEXS,
-      CONFIG_VALUE_NEARLINK_ADDR,
-      CONFIG_VALUE_NEARLINK_DHCP_START,
-      CONFIG_VALUE_NEARLINK_DHCP_END,
-      CONFIG_VALUE_NEARLINK_IPV4_POOL,
-      CONFIG_VALUE_NEARLINK_IPV6_POOL,
-      CONFIG_VALUE_NEARLINK_IPV6_ROUTED_POOL,
-      CONFIG_VALUE_NEARLINK_IPV6_ROUTED_UPSTREAM,
-  };
+    enum class Config_Value {
+        CONFIG_VALUE_SHARE_SUPPORT,
+        CONFIG_VALUE_USB_REGEXS,
+        CONFIG_VALUE_WIFI_REGEXS,
+        CONFIG_VALUE_BLUETOOTH_REGEXS,
+        CONFIG_VALUE_BT_PAN_ADDR,
+        CONFIG_VALUE_WIFI_HOTSPOT_ADDR,
+        CONFIG_VALUE_USB_RNDIS_ADDR,
+        CONFIG_VALUE_BT_PAN_DHCP_NAME,
+        CONFIG_VALUE_WIFI_DHCP_NAME,
+        CONFIG_VALUE_USB_DHCP_NAME,
+        CONFIG_VALUE_USB_IFACE_NAME,
+        CONFIG_VALUE_ROUTE_SUFFIX,
+        CONFIG_VALUE_DHCP_ENDIP,
+        CONFIG_VALUE_DEFAULT_MASK,
+        CONFIG_VALUE_WIFI_SET_DHCP,
+        CONFIG_VALUE_NEARLINK_IPV4_POOL,
+        CONFIG_VALUE_NEARLINK_IPV6_POOL,
+        CONFIG_VALUE_NEARLINK_IPV6_ROUTED_POOL,
+        CONFIG_VALUE_NEARLINK_IPV6_ROUTED_UPSTREAM,
+    };
 
-  bool isWifiHotspotSetDhcp_ = false;
-  bool supported_ = false;
-  std::vector<std::string> usbRegexs_;
-  std::vector<std::string> wifiRegexs_;
-  std::vector<std::string> blueToothRegexs_;
-  std::vector<std::string> nearlinkRegexs_;
-  std::string btPanIpv4Str_;
-  std::string wifiIpv4Str_;
-  std::string usbIpv4Str_;
-  std::string routeSuffix_;
-  std::string btPanDhcpServerName_;
-  std::string wifiDhcpServerName_;
-  std::string usbDhcpServerName_;
-  std::string usbIfaceName_;
-  std::string defaultMask_;
-  std::string dhcpEndIP_;
-  std::string nearlinkIpv4Str_;
-  std::string nearlinkDhcpStart_;
-  std::string nearlinkDhcpEnd_;
-  std::string nearlinkIpv4Pool_{"172.24.0.0/16"};
-  std::string nearlinkIpv6Pool_{"fd77:6e6c:6970::/48"};
-  std::string nearlinkIpv6RoutedPool_;
-  std::string nearlinkIpv6RoutedUpstream_;
-  std::map<std::string, Config_Value> configMap_;
-  static constexpr const char kTcpBeLiberal_[] = "/proc/sys/net/netfilter/nf_conntrack_tcp_be_liberal";
+    bool isWifiHotspotSetDhcp_ = false;
+    bool supported_ = false;
+    std::vector<std::string> usbRegexs_;
+    std::vector<std::string> wifiRegexs_;
+    std::vector<std::string> blueToothRegexs_;
+    std::string btPanIpv4Str_;
+    std::string wifiIpv4Str_;
+    std::string usbIpv4Str_;
+    std::string routeSuffix_;
+    std::string btPanDhcpServerName_;
+    std::string wifiDhcpServerName_;
+    std::string usbDhcpServerName_;
+    std::string usbIfaceName_;
+    std::string defaultMask_;
+    std::string dhcpEndIP_;
+    std::string nearlinkIpv4Pool_{"172.24.0.0/16"};
+    std::string nearlinkIpv6Pool_{"fd77:6e6c:6970::/48"};
+    std::string nearlinkIpv6RoutedPool_;
+    std::string nearlinkIpv6RoutedUpstream_;
+    std::map<std::string, Config_Value> configMap_;
+    static constexpr const char kTcpBeLiberal_[] = "/proc/sys/net/netfilter/nf_conntrack_tcp_be_liberal";
 
 private:
     void ParseConfigData(Config_Value cfgValue, std::string &strKey, std::string &strVal);

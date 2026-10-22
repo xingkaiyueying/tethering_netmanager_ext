@@ -25,9 +25,10 @@ namespace OHOS::NetManagerStandard {
 bool NearlinkIpShareAsyncWork::Execute(NearlinkIpShareContext *context, Operation operation)
 {
     if (((operation == Operation::SUPPORT || operation == Operation::CAPABILITIES) &&
-        (context->HasMode() || context->GetPeerAddress().empty())) ||
-        ((operation == Operation::CAPACITY || operation == Operation::STOP_GATEWAY || operation == Operation::STOP_TERMINAL ||
-            operation == Operation::GET_STATUS) && !context->GetPeerAddress().empty())) {
+         (context->HasMode() || context->GetPeerAddress().empty())) ||
+        ((operation == Operation::CAPACITY || operation == Operation::STOP_GATEWAY ||
+          operation == Operation::STOP_TERMINAL || operation == Operation::GET_STATUS) &&
+         !context->GetPeerAddress().empty())) {
         context->SetErrorCode(NETMANAGER_EXT_ERR_PARAMETER_ERROR);
         return false;
     }
@@ -57,9 +58,6 @@ bool NearlinkIpShareAsyncWork::Execute(NearlinkIpShareContext *context, Operatio
         case Operation::START_GATEWAY:
             if (context->HasMaxTerminals()) {
                 ret = client->StartNearlinkGatewayAny(context->GetMode(), context->GetMaxTerminals());
-            } else if (!context->GetPeerAddress().empty()) {
-                ret = context->HasMode() ? client->StartNearlinkGatewayWithMode(context->GetPeerAddress(),
-                    context->GetMode()) : client->StartNearlinkGateway(context->GetPeerAddress());
             }
             break;
         case Operation::STOP_GATEWAY:
@@ -67,8 +65,9 @@ bool NearlinkIpShareAsyncWork::Execute(NearlinkIpShareContext *context, Operatio
             break;
         case Operation::START_TERMINAL:
             if (!context->GetPeerAddress().empty()) {
-                ret = context->HasMode() ? client->StartNearlinkTerminalWithMode(context->GetPeerAddress(),
-                    context->GetMode()) : client->StartNearlinkTerminal(context->GetPeerAddress());
+                ret = context->HasMode()
+                          ? client->StartNearlinkTerminalWithMode(context->GetPeerAddress(), context->GetMode())
+                          : client->StartNearlinkTerminal(context->GetPeerAddress());
             }
             break;
         case Operation::STOP_TERMINAL:
@@ -88,10 +87,10 @@ bool NearlinkIpShareAsyncWork::Execute(NearlinkIpShareContext *context, Operatio
     return true;
 }
 
-#define DEFINE_DO(name, operation) \
+#define DEFINE_DO(name, operation)                                       \
     bool NearlinkIpShareAsyncWork::name(NearlinkIpShareContext *context) \
-    { \
-        return Execute(context, Operation::operation); \
+    {                                                                    \
+        return Execute(context, Operation::operation);                   \
     }
 DEFINE_DO(DoSupport, SUPPORT)
 DEFINE_DO(DoCapabilities, CAPABILITIES)
@@ -103,9 +102,9 @@ DEFINE_DO(DoStopTerminal, STOP_TERMINAL)
 DEFINE_DO(DoGetStatus, GET_STATUS)
 #undef DEFINE_DO
 
-#define DEFINE_EXEC(name, executor) \
-    void NearlinkIpShareAsyncWork::name(napi_env env, void *data) \
-    { \
+#define DEFINE_EXEC(name, executor)                                                                          \
+    void NearlinkIpShareAsyncWork::name(napi_env env, void *data)                                            \
+    {                                                                                                        \
         BaseAsyncWork::ExecAsyncWork<NearlinkIpShareContext, NearlinkIpShareAsyncWork::executor>(env, data); \
     }
 
@@ -151,17 +150,20 @@ void NearlinkIpShareAsyncWork::VoidCallback(napi_env env, napi_status status, vo
 
 void NearlinkIpShareAsyncWork::SupportedCallback(napi_env env, napi_status status, void *data)
 {
-    BaseAsyncWork::AsyncWorkCallback<NearlinkIpShareContext, NearlinkIpShareAsyncWork::MakeSupported>(env, status, data);
+    BaseAsyncWork::AsyncWorkCallback<NearlinkIpShareContext, NearlinkIpShareAsyncWork::MakeSupported>(env, status,
+                                                                                                      data);
 }
 
 void NearlinkIpShareAsyncWork::CapabilitiesCallback(napi_env env, napi_status status, void *data)
 {
-    BaseAsyncWork::AsyncWorkCallback<NearlinkIpShareContext, NearlinkIpShareAsyncWork::MakeCapabilities>(env, status, data);
+    BaseAsyncWork::AsyncWorkCallback<NearlinkIpShareContext, NearlinkIpShareAsyncWork::MakeCapabilities>(env, status,
+                                                                                                         data);
 }
 
 void NearlinkIpShareAsyncWork::MaxTerminalsCallback(napi_env env, napi_status status, void *data)
 {
-    BaseAsyncWork::AsyncWorkCallback<NearlinkIpShareContext, NearlinkIpShareAsyncWork::MakeMaxTerminals>(env, status, data);
+    BaseAsyncWork::AsyncWorkCallback<NearlinkIpShareContext, NearlinkIpShareAsyncWork::MakeMaxTerminals>(env, status,
+                                                                                                         data);
 }
 
 void NearlinkIpShareAsyncWork::StatusCallback(napi_env env, napi_status status, void *data)

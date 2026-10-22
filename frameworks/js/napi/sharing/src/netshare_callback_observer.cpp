@@ -84,8 +84,8 @@ void NearlinkIpShareCallbackObserver::OnNearlinkIpShareStateChanged(const Nearli
     if (!manager->HasEventListener(static_cast<std::string>(EVENT_NEARLINK_IPSHARE_STATE_CHANGE))) {
         return;
     }
-    manager->EmitByUv(static_cast<std::string>(EVENT_NEARLINK_IPSHARE_STATE_CHANGE),
-        new NearlinkIpShareStatus(status), NearlinkIpShareStateChangedCallback);
+    manager->EmitByUv(static_cast<std::string>(EVENT_NEARLINK_IPSHARE_STATE_CHANGE), new NearlinkIpShareStatus(status),
+                      NearlinkIpShareStateChangedCallback);
 }
 
 napi_value NetShareCallbackObserver::CreateSharingStateChangedParam(napi_env env, void *data)
@@ -144,7 +144,6 @@ void NetShareCallbackObserver::SharingUpstreamChangedCallback(uv_work_t *work, i
 {
     CallbackTemplate<CreateSharingUpstreamChangedParam>(work, status);
 }
-
 
 void NearlinkIpShareCallbackObserver::NearlinkIpShareStateChangedCallback(uv_work_t *work, int status)
 {
