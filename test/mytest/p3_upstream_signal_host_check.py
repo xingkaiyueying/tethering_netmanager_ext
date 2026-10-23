@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix='p3-upstream-signal-') as directory:
     negative = os.environ.get('P3_UPSTREAM_SIGNAL_NEGATIVE')
     if negative == 'nonce':
         assert production.count('nonce == token &&') == 1
-        production = production.replace('nonce == token &&', '')
+        production = production.replace('nonce == token &&', '(static_cast<void>(nonce), true) &&')
     if negative == 'sequence':
         assert production.count('revision >= receivedSequence &&') == 1
         production = production.replace('revision >= receivedSequence &&', '')
