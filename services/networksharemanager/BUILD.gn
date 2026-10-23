@@ -48,6 +48,8 @@ ohos_shared_library("net_tether_manager") {
     "src/nearlink_peer_upstream.cpp",
     "src/nearlink_ipv6_runtime.cpp",
     "src/nearlink_family_validation.cpp",
+    "src/nearlink_upstream_signal.cpp",
+    "src/nearlink_upstream_status.cpp",
     "src/networkshare_configuration.cpp",
     "src/networkshare_hisysevent.cpp",
     "src/networkshare_main_statemachine.cpp",

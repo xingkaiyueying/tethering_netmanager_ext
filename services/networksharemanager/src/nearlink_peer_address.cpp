@@ -39,6 +39,9 @@ constexpr const char *PEER_SUBNET_MASK = "255.255.255.0";
 } // namespace
 bool NearlinkIpShareController::CleanupGatewayPeer(PeerAddressContext &peer)
 {
+    if (peer.upstreamSignal) {
+        peer.upstreamSignal->Reset();
+    }
     if (CleanupGatewayPeerUpstream(peer) != 0) {
         return false;
     }

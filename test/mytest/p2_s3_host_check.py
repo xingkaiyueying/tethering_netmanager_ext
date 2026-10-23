@@ -74,6 +74,28 @@ bool Cleanup(){return call("ipv6-cleanup")==0;}
         upstream_source = subprocess.check_output(['git', '-c', f'safe.directory={repo.as_posix()}',
             '-C', str(repo), 'show', before_ref + ':services/networksharemanager/src/nearlink_peer_upstream.cpp']).decode()
     put('nearlink_peer_upstream.cpp', upstream_source)
+    put('nearlink_upstream_status.cpp', (source / 'src/nearlink_upstream_status.cpp').read_text())
+    if os.environ.get('P3_UPSTREAM_CONTROLLER_NEGATIVE'):
+        signal = (out / 'nearlink_upstream_status.cpp').read_text()
+        assert signal.count('++validation_[i].revision;') == 1
+        put('nearlink_upstream_status.cpp', signal.replace('++validation_[i].revision;', ''))
+    put('nearlink_upstream_signal.h', '''#pragma once
+#include "mock.h"
+namespace OHOS::NetManagerStandard {
+class NearlinkUpstreamSignal {
+public:
+ static constexpr uint8_t IPV4=1,IPV6=2;
+ struct Link {std::string iface,localIpv4,gatewayIpv4;uint32_t ifindex=0;int32_t netId=-1;bool ipv6=false;};
+ struct State {bool known=false;uint8_t available=0;};
+ static State remote;
+ inline static std::map<std::string,uint8_t> announced;
+ void Reset() {}
+ void Gateway(const Link &link,uint8_t mask) {announced[link.iface]=mask;}
+ State Terminal(const Link &) {return remote;}
+};
+inline NearlinkUpstreamSignal::State NearlinkUpstreamSignal::remote{};
+}
+''')
     restart_before = os.environ.get('P3_RESTART_BEFORE_REF')
     if restart_before:
         for name in ('nearlink_ipshare_controller.cpp', 'nearlink_peer_upstream.cpp'):
@@ -160,6 +182,7 @@ inline int StopDhcpServer(const char*) {return call("server-stop");}
 #include "nearlink_ipshare_controller.cpp"
 #include "nearlink_peer_address.cpp"
 #include "nearlink_peer_upstream.cpp"
+#include "nearlink_upstream_status.cpp"
 #include "address_callbacks.cpp"
 using namespace OHOS::NetManagerStandard;
 int main() {
@@ -443,12 +466,14 @@ int main() {
     assert(c->addressPeers_[0].interfaceForwarding && c->addressPeers_[1].interfaceForwarding);
     assert(c->status_.hasUpstream && c->status_.state==NearlinkIpShareState::SERVING);
     assert(c->addressPeers_[0].ipv6Routed && c->addressPeers_[1].ipv6Routed);
+    assert(NearlinkUpstreamSignal::announced["sleip0"]==3 && NearlinkUpstreamSignal::announced["sleip1"]==3);
     assert(!c->status_.ipv4.externalAvailable && !c->status_.ipv6.externalAvailable);
     calls.clear();c->ConfigureUpstream();
     assert(std::find(calls.begin(),calls.end(),"nat-add")==calls.end());
     // DNS failure affects external readiness, preserves local DHCP and forwarding ownership.
     errors["dns-set"]=-7;c->OnUpstreamChanged();q.Drain();
     assert(!c->dnsUpstreamReady_ && c->addressPeers_[1].dhcpStarted && c->addressPeers_[1].natEnabled);
+    assert(NearlinkUpstreamSignal::announced["sleip0"]==0 && NearlinkUpstreamSignal::announced["sleip1"]==0);
     errors.clear();c->OnUpstreamChanged();q.Drain();assert(c->dnsUpstreamReady_);
     // Failed old-upstream release blocks only its peer, never grafts its flags onto the new upstream.
     net.iface="rmnet0";net.netId=11;errors["nat-del:sleip1"]=-7;
@@ -456,12 +481,14 @@ int main() {
     assert(c->addressPeers_[0].upstreamIface=="rmnet0" && c->addressPeers_[0].natEnabled);
     assert(c->addressPeers_[1].upstreamIface=="wlan0" && c->addressPeers_[1].natEnabled);
     assert(!c->addressPeers_[1].interfaceForwarding && !c->addressPeers_[1].ipv6Routed);
+    assert(NearlinkUpstreamSignal::announced["sleip0"]==3 && NearlinkUpstreamSignal::announced["sleip1"]==0);
     errors.clear();c->OnUpstreamChanged();q.Drain();
     assert(c->addressPeers_[1].upstreamIface=="rmnet0" && c->addressPeers_[1].natEnabled);
     // Losing only IPv4 default removes NAT but retains independently routed IPv6.
     net.upstreamProperties.routeList_.clear();c->ConfigureUpstream();
     assert(c->addressPeers_[0].natEnabled && c->addressPeers_[0].ipv6Routed);
     assert(c->status_.ipv4.hasError);
+    assert(NearlinkUpstreamSignal::announced["sleip0"]==2 && NearlinkUpstreamSignal::announced["sleip1"]==2);
     NearlinkIpv6Runtime::kernelV4Default=true;c->ConfigureUpstream();
     assert(!c->status_.ipv4.hasError && c->status_.ipv4.configurationAvailable);
     NearlinkIpv6Runtime::kernelV4Default=false;
@@ -474,6 +501,7 @@ int main() {
     assert(!c->status_.hasUpstream && !c->addressPeers_[0].natEnabled && !c->addressPeers_[1].natEnabled);
     assert(c->forwardingEnabled_ && c->dnsProxyStarted_ && c->addressPeers_[0].dhcpStarted);
     assert(c->status_.ipv6.hasError && !c->addressPeers_[0].ipv6Routed);
+    assert(NearlinkUpstreamSignal::announced["sleip0"]==0 && NearlinkUpstreamSignal::announced["sleip1"]==0);
     net.hasDefault=true;errors["nat-add:sleip1"]=-7;c->ConfigureUpstream();
     assert(c->addressPeers_[0].natEnabled && !c->addressPeers_[1].natEnabled && c->addressPeers_[1].natAttempted);
     assert(c->addressPeers_[0].ipv6Routed && !c->addressPeers_[1].ipv6Routed);
@@ -498,6 +526,7 @@ int main() {
     // Explicit routed pool is bound to its upstream; a mismatch keeps local-only IPv6.
     c->configuration_.routedPool="2001:db8:100::/48";c->configuration_.routedUpstream="eth0";
     c->ConfigureUpstream();assert(!c->addressPeers_[0].ipv6Routed && c->status_.ipv6.hasError);
+    assert(NearlinkUpstreamSignal::announced["sleip0"]==1 && NearlinkUpstreamSignal::announced["sleip1"]==1);
     c->configuration_.routedUpstream="rmnet0";c->ConfigureUpstream();assert(c->addressPeers_[1].ipv6Routed);
     c->configuration_.routedPool.clear();c->ConfigureUpstream();
     // A live/retiring prefix collision must not be advertised on a second peer.
@@ -637,6 +666,57 @@ int main() {
     c->ConfigureUpstream();assert(!c->status_.ipv6.hasError && c->addressPeers_[1].ipv6Routed);
     assert(c->StopGateway()==0);q.Drain();net.hasDefault=false;
     puts("terminal restart: local drain wait, generic rejection ends, mode retention, bounded failure and stop cancellation PASS");
+    // A private gateway signal revokes only the affected family's cached PASS.
+    probeThreads.clear();probe4=probe6=2;
+    assert(c->StartTerminal(peer,3)==0);q.Drain();
+    link.role=NearlinkIpShareRole::TERMINAL;link.state=NearlinkIpShareState::CHANNEL_READY;
+    link.peerAddress=peer;link.ifaceName="sleip0";
+    link.generation=900;link.sequence=1;link.selectedMode=3;
+    OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
+    c->OnNearlinkStatus(link);q.Drain();
+    addresses.addressCount=1;c->OnIpv6Addresses("sleip0",addresses);q.Drain();
+    v6.ipv6LifeTime.routerLifeTime=180;v6.dnsList.dnsNumber=1;
+    strcpy(v6.dnsList.dnsAddr[0],"fd77:77:1::53");
+    c->OnDhcpSuccess(0,"sleip0",v6);c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();
+    NearlinkUpstreamSignal::remote={true,3};
+    assert(c->PollTerminalUpstream());c->RefreshFamilyStatus();q.Drain();
+    while(!probeThreads.empty()){auto job=probeThreads.front();probeThreads.pop_front();job();q.Drain();}
+    assert(c->status_.ipv4.externalAvailable && c->status_.ipv6.externalAvailable);
+    auto localLink=net.lastLink;auto localSupplier=c->netSupplierId_;
+    c->validation_[0].next={};c->ValidateFamilies();auto lateUpstream4=TakeProbe(false);
+    NearlinkUpstreamSignal::remote={true,2};
+    assert(c->PollTerminalUpstream());c->RefreshFamilyStatus();q.Drain();
+    assert(!c->status_.ipv4.externalAvailable && c->status_.ipv4.validation==3);
+    assert(c->status_.ipv4.error.stage=="UPSTREAM" && c->status_.ipv6.externalAvailable);
+    // Recovery before the old probe completes still requires a fresh probe.
+    NearlinkUpstreamSignal::remote={true,3};
+    c->PollTerminalUpstream();c->RefreshFamilyStatus();q.Drain();
+    lateUpstream4();q.Drain();assert(!c->status_.ipv4.externalAvailable);
+    auto fresh4=TakeProbe(false);fresh4();q.Drain();assert(c->status_.ipv4.externalAvailable);
+    NearlinkUpstreamSignal::remote={true,2};
+    c->PollTerminalUpstream();c->RefreshFamilyStatus();q.Drain();
+    assert(c->status_.hasUpstream && c->status_.state==NearlinkIpShareState::ACTIVE);
+    NearlinkUpstreamSignal::remote={true,0};
+    assert(c->PollTerminalUpstream());c->RefreshFamilyStatus();q.Drain();
+    assert(!c->status_.hasUpstream && !c->status_.ipv6.externalAvailable);
+    assert(c->status_.ipv4.configurationAvailable && c->status_.ipv6.configurationAvailable);
+    assert(c->netSupplierId_==localSupplier && net.lastLink==localLink);
+    c->ValidateFamilies();assert(probeThreads.empty());
+    NearlinkUpstreamSignal::remote={true,1};
+    assert(c->PollTerminalUpstream());c->RefreshFamilyStatus();q.Drain();
+    assert(!c->status_.ipv4.externalAvailable && c->status_.ipv4.validation==1);
+    auto restore4=TakeProbe(false);restore4();q.Drain();
+    assert(c->status_.ipv4.externalAvailable && !c->status_.ipv6.externalAvailable);
+    NearlinkUpstreamSignal::remote={true,3};
+    assert(c->PollTerminalUpstream());c->RefreshFamilyStatus();q.Drain();
+    auto restore6=TakeProbe(true);restore6();q.Drain();
+    assert(c->status_.ipv4.externalAvailable && c->status_.ipv6.externalAvailable);
+    NearlinkUpstreamSignal::remote={true,0};c->PollTerminalUpstream();c->RefreshFamilyStatus();q.Drain();
+    NearlinkUpstreamSignal::remote={};c->PollTerminalUpstream();c->RefreshFamilyStatus();q.Drain();
+    assert(probeThreads.size()==2 && !c->status_.ipv4.externalAvailable && !c->status_.ipv6.externalAvailable);
+    auto lateSignal=TakeProbe(false);TakeProbe(true);c->StopTerminal();q.Drain();lateSignal();q.Drain();
+    assert(!c->gatewayUpstream_.known && c->status_.state==NearlinkIpShareState::IDLE);
+    puts("remote upstream: IPv4/IPv6 isolated loss, late PASS rejection, retained local link, verified recovery, legacy fallback and stop reset PASS");
     c->status_.netId=106;
     c->status_.ipv4.configurationAvailable=c->status_.ipv6.configurationAvailable=true;
     c->status_.ipv4.externalAvailable=c->status_.ipv6.externalAvailable=true;

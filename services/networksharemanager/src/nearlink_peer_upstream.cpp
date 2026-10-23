@@ -171,6 +171,8 @@ bool NearlinkIpShareController::ConfigureGatewayPeerUpstream(PeerAddressContext 
             peer.slot, peer.iface.c_str(), peer.upstreamNetId, peer.interfaceForwarding, peer.natEnabled,
             peer.ipv6Ready, peer.ipv6Routed, peer.upstreamError);
     }
+    NotifyGatewayUpstream(peer, forwarding && peer.natEnabled && hasV4 && peer.ipv4Error == 0 &&
+                                    peer.dhcpStarted && dnsUpstreamReady_);
     return forwarding;
 }
 

@@ -30,6 +30,7 @@
 #include "nearlink_family_network.h"
 #include "nearlink_ip_share_status.h"
 #include "nearlink_ipv6_runtime.h"
+#include "nearlink_upstream_signal.h"
 #include "networkshare_configuration.h"
 
 namespace OHOS::Nearlink {
@@ -90,6 +91,7 @@ private:
         int32_t ipv4Error{0}, ipv6Error{0};
         std::chrono::steady_clock::time_point ipv6PendingSince{};
         NearlinkIpv6Runtime ipv6;
+        std::unique_ptr<NearlinkUpstreamSignal> upstreamSignal;
     };
     bool CleanupGatewayPeer(PeerAddressContext &peer);
     int32_t CleanupGatewayPeerUpstream(PeerAddressContext &peer);
@@ -115,6 +117,12 @@ private:
     void RefreshFamilyStatus();
     void ValidateFamilies();
     void RequestFamilyValidation();
+    void NotifyGatewayUpstream(PeerAddressContext &peer, bool ipv4);
+    bool PollTerminalUpstream();
+    bool RemoteFamilyBlocked(bool ipv6) const;
+    void ApplyRemoteFamilyStatus(NearlinkIpShareFamilyStatus &family, bool ipv6);
+    NearlinkUpstreamSignal upstreamSignal_;
+    NearlinkUpstreamSignal::State gatewayUpstream_;
     bool validationPending_{false};
     std::set<std::pair<uint64_t, uint32_t>> addressReconcilePending_;
     struct FamilyValidationState {

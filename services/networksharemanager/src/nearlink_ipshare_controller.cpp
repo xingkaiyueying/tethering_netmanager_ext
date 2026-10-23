@@ -1420,6 +1420,8 @@ void NearlinkIpShareController::RefreshFamilyStatus()
         };
         fill(status_.ipv4, families_.ipv4, false);
         fill(status_.ipv6, families_.ipv6, true);
+        ApplyRemoteFamilyStatus(status_.ipv4, false);
+        ApplyRemoteFamilyStatus(status_.ipv6, true);
         status_.ipv4Address = families_.ipv4.netAddrList_.empty() ? "" : families_.ipv4.netAddrList_.front().address_;
         available = status_.ipv4.configurationAvailable || status_.ipv6.configurationAvailable;
         status_.hasUpstream = status_.ipv4.externalAvailable || status_.ipv6.externalAvailable;
@@ -1478,10 +1480,11 @@ void NearlinkIpShareController::ValidateFamilies()
             std::lock_guard lock(mutex_);
             netId = status_.netId;
             auto &family = ipv6 ? status_.ipv6 : status_.ipv4;
-            if (netId < 0 || !family.configurationAvailable) {
+            if (netId < 0 || !family.configurationAvailable || RemoteFamilyBlocked(ipv6)) {
                 continue;
             }
             family.validation = 1;
+            family.externalAvailable = false;
         }
         probe.inFlight = true;
         probe.next = now + std::chrono::seconds(30);
@@ -1509,7 +1512,8 @@ void NearlinkIpShareController::ValidateFamilies()
                     std::lock_guard lock(self->mutex_);
                     auto &family = ipv6 ? self->status_.ipv6 : self->status_.ipv4;
                     family.validation = family.configurationAvailable ? value : 0;
-                    family.externalAvailable = value == 2 && family.configurationAvailable;
+                    family.externalAvailable = value == 2 && family.configurationAvailable &&
+                                               !self->RemoteFamilyBlocked(ipv6);
                 }
                 current.next = std::chrono::steady_clock::now() + std::chrono::seconds(value == 3 ? 5 : 30);
                 self->RefreshFamilyStatus();
@@ -1557,6 +1561,9 @@ void NearlinkIpShareController::ScheduleMaintenance(uint64_t generation)
             if (self->dualStack_) {
                 self->ApplyIpv6Network(self->ipv6Result_);
             }
+            if (self->PollTerminalUpstream()) {
+                self->RefreshFamilyStatus();
+            }
             self->ValidateFamilies();
             self->ScheduleMaintenance(generation);
         },
@@ -1597,6 +1604,8 @@ bool NearlinkIpShareController::Cleanup(bool publishIdle, bool deferFailure)
         addressReconcilePending_.clear();
     }
     int32_t error = 0;
+    upstreamSignal_.Reset();
+    gatewayUpstream_ = {};
     NearlinkIpShareStatus idle;
     auto result = [&error](const char *resource, int32_t ret) {
         NETMGR_EXT_LOG_I("[NearlinkIpShare][Cleanup] resource=%{public}s code=%{public}d", resource, ret);
