@@ -77,14 +77,14 @@ bool NearlinkIpShareController::PollTerminalUpstream()
     const auto next = upstreamSignal_.Terminal(link);
     {
         std::lock_guard lock(mutex_);
-        if (next.known == gatewayUpstream_.known && next.available == gatewayUpstream_.available) {
+        if (next.known == gatewayUpstream_.known && next.available == gatewayUpstream_.available && !next.changed) {
             return false;
         }
         for (size_t i = 0; i < validation_.size(); ++i) {
             uint8_t bit = i == 0 ? NearlinkUpstreamSignal::IPV4 : NearlinkUpstreamSignal::IPV6;
             bool wasBlocked = gatewayUpstream_.known && !(gatewayUpstream_.available & bit);
             bool blocked = next.known && !(next.available & bit);
-            if (wasBlocked == blocked) {
+            if (wasBlocked == blocked && !(next.changed & bit)) {
                 continue;
             }
             // Invalidate only this family's old completion. Keep one in-flight probe

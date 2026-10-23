@@ -86,12 +86,12 @@ class NearlinkUpstreamSignal {
 public:
  static constexpr uint8_t IPV4=1,IPV6=2;
  struct Link {std::string iface,localIpv4,gatewayIpv4;uint32_t ifindex=0;int32_t netId=-1;bool ipv6=false;};
- struct State {bool known=false;uint8_t available=0;};
+ struct State {bool known=false;uint8_t available=0,changed=0;};
  static State remote;
  inline static std::map<std::string,uint8_t> announced;
  void Reset() {}
  void Gateway(const Link &link,uint8_t mask) {announced[link.iface]=mask;}
- State Terminal(const Link &) {return remote;}
+ State Terminal(const Link &) {auto result=remote;remote.changed=0;return result;}
 };
 inline NearlinkUpstreamSignal::State NearlinkUpstreamSignal::remote{};
 }
@@ -711,6 +711,9 @@ int main() {
     assert(c->PollTerminalUpstream());c->RefreshFamilyStatus();q.Drain();
     auto restore6=TakeProbe(true);restore6();q.Drain();
     assert(c->status_.ipv4.externalAvailable && c->status_.ipv6.externalAvailable);
+    NearlinkUpstreamSignal::remote={true,3,1};c->PollTerminalUpstream();c->RefreshFamilyStatus();q.Drain();
+    assert(!c->status_.ipv4.externalAvailable && c->status_.ipv6.externalAvailable);
+    auto flap4=TakeProbe(false);flap4();q.Drain();assert(c->status_.ipv4.externalAvailable);
     NearlinkUpstreamSignal::remote={true,0};c->PollTerminalUpstream();c->RefreshFamilyStatus();q.Drain();
     NearlinkUpstreamSignal::remote={};c->PollTerminalUpstream();c->RefreshFamilyStatus();q.Drain();
     assert(probeThreads.size()==2 && !c->status_.ipv4.externalAvailable && !c->status_.ipv6.externalAvailable);

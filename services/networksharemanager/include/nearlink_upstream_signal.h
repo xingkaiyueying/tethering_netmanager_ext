@@ -22,6 +22,7 @@ public:
     struct State {
         bool known{false};
         uint8_t available{0};
+        uint8_t changed{0}; // Transitions received in this tick, including a loss followed by recovery.
     };
     NearlinkUpstreamSignal();
     ~NearlinkUpstreamSignal();

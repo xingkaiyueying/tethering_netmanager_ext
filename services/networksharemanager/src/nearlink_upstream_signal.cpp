@@ -199,7 +199,9 @@ struct NearlinkUpstreamSignal::Impl {
         if (kind == STATUS && SameEndpoint(source, entry.peer) && nonce == token && revision >= receivedSequence &&
             (revision != receivedSequence || mask == state.available)) {
             receivedSequence = revision;
-            state = {true, mask};
+            state.changed |= state.known ? state.available ^ mask : 0;
+            state.known = true;
+            state.available = mask;
             lastReply = now;
             Send(entry, ACK, now);
         }
@@ -307,6 +309,7 @@ NearlinkUpstreamSignal::State NearlinkUpstreamSignal::Terminal(const Link &link)
         return {};
     }
     auto now = Clock::now();
+    impl_->state.changed = 0;
     if (impl_->state.known && now - impl_->lastReply > EXPIRY) {
         Reset(); // A new challenge rejects delayed frames and permits legacy-probe fallback.
         return {};

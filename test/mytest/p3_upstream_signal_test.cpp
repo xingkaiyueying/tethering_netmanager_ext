@@ -152,6 +152,9 @@ int main(){
     dropAck=true;Gateway(gateway,3);assert(Terminal(terminal).available==3);Gateway(gateway,3);
     auto sent=sendCalls;TestClock::Advance(1);Gateway(gateway,3);assert(sendCalls>sent);
     dropAck=false;Terminal(terminal);Gateway(gateway,3);
+    Gateway(gateway,2);Gateway(gateway,3);
+    auto flap=Terminal(terminal);assert(flap.available==3&&flap.changed==1);
+    assert(Terminal(terminal).changed==0);Gateway(gateway,3);
     sendFailure=true;Gateway(gateway,2);assert(Terminal(terminal).available==3);
     sendFailure=false;TestClock::Advance(1);Gateway(gateway,2);assert(Terminal(terminal).available==2);
     TestClock::Advance(16);assert(!Terminal(terminal).known); // lost control falls back with a new challenge
