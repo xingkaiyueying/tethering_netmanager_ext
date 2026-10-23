@@ -13,10 +13,13 @@
 #include <string>
 #include <vector>
 #include <cerrno>
+#include "fwmark.h"
+static_assert(sizeof(OHOS::nmd::Fwmark)==sizeof(uint32_t));
 using ssize_t = long long;
 using socklen_t = int;
 constexpr int SOCK_CLOEXEC=0x80000, SOCK_NONBLOCK=0x800, SO_BINDTODEVICE=25, MSG_DONTWAIT=0x40;
 constexpr int GRND_NONBLOCK=1, IFNAMSIZ=16;
+constexpr int SO_MARK=36;
 struct TestClock {
     using time_point=std::chrono::steady_clock::time_point;
     inline static time_point current{std::chrono::seconds(100)};
@@ -34,6 +37,7 @@ static std::map<int,TestSocket> descriptors;
 static std::array<unsigned,4> indices{10,20,11,21};
 static int node=0,nextFd=100,closed=0,randomCalls=0,sendCalls=0,receiveCalls=0;
 static bool dropStatus=false,dropAck=false,randomFailure=false,bindFailure=false,sendFailure=false;
+static bool markFailure=false;
 static std::map<int,bool> socketFailure;
 static Datagram lastStatus;
 static std::vector<std::string> logCalls;
@@ -53,8 +57,17 @@ int fake_close(int fd){assert(descriptors.erase(fd)==1);++closed;return 0;}
 int fake_option(int fd,int level,int option,const void *data,int size){
     auto &entry=descriptors.at(fd);
     if(level==SOL_SOCKET && option==SO_BINDTODEVICE){entry.iface=(const char*)data;assert(size==(int)entry.iface.size()+1);}
-    else {assert(level==IPPROTO_IPV6 && option==IPV6_V6ONLY && *(const int*)data==1);}
+    else if(level==SOL_SOCKET && option==SO_MARK){
+        if(markFailure){errno=EACCES;return -1;}
+        OHOS::nmd::Fwmark mark;memcpy(&mark.intValue,data,sizeof(mark.intValue));
+        assert(size==sizeof(mark.intValue)&&mark.explicitlySelected&&mark.protectedFromVpn&&mark.uidBillingDone);
+        entry.netId=mark.netId;
+    } else {assert(level==IPPROTO_IPV6 && option==IPV6_V6ONLY && *(const int*)data==1);}
     return 0;
+}
+int fake_get_option(int,int level,int option,void *data,int *size){
+    assert(level==SOL_SOCKET&&option==SO_MARK&&*size==sizeof(uint32_t));
+    OHOS::nmd::Fwmark mark;mark.uidBillingDone=true;memcpy(data,&mark.intValue,sizeof(mark.intValue));return 0;
 }
 int fake_bind(int fd,const sockaddr *address,int size){
     if(bindFailure){errno=EACCES;return -1;}
@@ -93,16 +106,10 @@ ssize_t fake_receive(int fd,void *data,size_t size,int flags,sockaddr *address,i
     memcpy(address,&packet.source,bytes);*addressSize=bytes;
     size_t copied=std::min(size,packet.data.size());memcpy(data,packet.data.data(),copied);return copied;
 }
-namespace OHOS::NetManagerStandard {
-class NetConnClient {
-public:
-    static NetConnClient &GetInstance(){static NetConnClient client;return client;}
-    int BindSocket(int fd,int id){descriptors.at(fd).netId=id;return 0;}
-};
-}
 #define socket fake_socket
 #define close fake_close
 #define setsockopt fake_option
+#define getsockopt fake_get_option
 #define bind fake_bind
 #define sendto fake_send
 #define recvfrom fake_receive
@@ -184,6 +191,7 @@ int main(){
     randomFailure=true;assert(!terminal.Terminal(tl).known);randomFailure=false;
     socketFailure[AF_INET]=true;assert(!terminal.Terminal(tl).known);
     socketFailure[AF_INET]=false;terminal.Reset();
+    markFailure=true;assert(!terminal.Terminal(tl).known);markFailure=false;terminal.Reset();
     terminal.Reset();bindFailure=true;assert(!terminal.Terminal(tl).known);bindFailure=false;
     TestClock::Advance(5);terminal.Terminal(tl);auto before=receiveCalls;
     for(int i=0;i<100;++i){Inject(old);}

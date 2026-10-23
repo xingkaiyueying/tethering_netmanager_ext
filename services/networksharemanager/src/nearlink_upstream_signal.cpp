@@ -13,7 +13,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "net_conn_client.h"
+#include "fwmark.h"
 #include "netmgr_ext_log_wrapper.h"
 
 namespace OHOS::NetManagerStandard {
@@ -27,6 +27,21 @@ constexpr auto REFRESH = std::chrono::seconds(5);
 constexpr auto EXPIRY = std::chrono::seconds(15);
 using Token = std::array<uint8_t, 16>;
 using Frame = std::array<uint8_t, FRAME_SIZE>;
+
+bool BindNetwork(int fd, int32_t netId)
+{
+    // netmanager configures its own UDP fd with existing CAP_NET_ADMIN/self setopt.
+    // Reuse the Base mark fields used by the ordinary network-binding path.
+    nmd::Fwmark mark;
+    socklen_t size = sizeof(mark.intValue);
+    if (getsockopt(fd, SOL_SOCKET, SO_MARK, &mark.intValue, &size) != 0) {
+        return false;
+    }
+    mark.netId = static_cast<uint16_t>(netId);
+    mark.explicitlySelected = true;
+    mark.protectedFromVpn = true;
+    return setsockopt(fd, SOL_SOCKET, SO_MARK, &mark.intValue, sizeof(mark.intValue)) == 0;
+}
 
 Frame Encode(uint8_t kind, uint8_t mask, const Token &token, uint64_t sequence)
 {
@@ -144,7 +159,7 @@ struct NearlinkUpstreamSignal::Impl {
         int one = 1;
         if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, link.iface.c_str(), link.iface.size() + 1) != 0 ||
             (ipv6 && setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one)) != 0) ||
-            NetConnClient::GetInstance().BindSocket(fd, link.netId) != 0 ||
+            !BindNetwork(fd, link.netId) ||
             bind(fd, reinterpret_cast<const sockaddr *>(&local), size) != 0) {
             close(fd);
             return;
@@ -247,6 +262,7 @@ void NearlinkUpstreamSignal::Reset()
 bool NearlinkUpstreamSignal::Prepare(const Link &link, bool gateway)
 {
     if (link.iface.empty() || link.iface.size() >= IFNAMSIZ || link.ifindex == 0 || link.netId < 0 ||
+        static_cast<uint32_t>(link.netId) > nmd::FWMARK_NET_ID_MASK ||
         if_nametoindex(link.iface.c_str()) != link.ifindex) {
         Reset();
         return false;
