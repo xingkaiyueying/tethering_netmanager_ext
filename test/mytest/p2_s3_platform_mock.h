@@ -29,8 +29,10 @@ constexpr int EOK=0, NETSYS_SUCCESS=0, NETMANAGER_SUCCESS=0, NETMANAGER_EXT_SUCC
 constexpr int NETMANAGER_EXT_ERR_PARAMETER_ERROR=-1, NETMANAGER_EXT_ERR_OPERATION_FAILED=-2;
 namespace NetsysNative { struct InterfaceConfigurationParcel { std::string ifName, ipv4Addr; }; }
 constexpr int NETMANAGER_EXT_ERR_LOCAL_PTR_NULL=-3, DHCP_SUCCESS=0;
-inline int strcpy_s(char *d, size_t n, const char *s) { if(strlen(s)>=n) return -1; strcpy(d,s); return 0; }
-#define NETMGR_EXT_LOG_I(...) ((void)0)
+inline int MockStrcpyS(char *d, size_t n, const char *s) { if(strlen(s)>=n) return -1; strcpy(d,s); return 0; }
+#define strcpy_s MockStrcpyS
+inline std::vector<std::string> sharingLogCalls;
+#define NETMGR_EXT_LOG_I(format, ...) sharingLogCalls.emplace_back(format)
 #define NETMGR_EXT_LOG_E(...) ((void)0)
 #include "nearlink_ip_share_status.h"
 namespace OHOS::NetManagerStandard {
@@ -38,11 +40,12 @@ class INearlinkIpShareEventCallback {
 public: virtual void OnNearlinkIpShareStateChanged(const NearlinkIpShareStatus &) {}
 };
 class NetworkShareConfiguration {
-    std::string gateway="192.168.77.1", start="192.168.77.2", end="192.168.77.20";
 public:
-    const std::string &GetNearlinkIpv4Addr() { return gateway; }
-    const std::string &GetNearlinkDhcpStart() { return start; }
-    const std::string &GetNearlinkDhcpEnd() { return end; }
+    std::string pool4="172.24.0.0/16", pool6="fd77:6e6c:6970::/48", routedPool, routedUpstream;
+    const std::string &GetNearlinkIpv6RoutedPool()const{return routedPool;}
+    const std::string &GetNearlinkIpv6RoutedUpstream()const{return routedUpstream;}
+    const std::string &GetNearlinkIpv4Pool() { return pool4; }
+    const std::string &GetNearlinkIpv6Pool() { return pool6; }
 };
 struct INetAddr {
     enum { IPV4=1, IPV6=2 };
@@ -85,9 +88,14 @@ public:
     NetLinkInfo lastLink;
     int registrations=0;
     static NetConnClient &GetInstance() { static NetConnClient n; return n; }
-    int GetNetIdByIdentifier(const char*,std::list<int32_t> &ids) {ids={42}; return 0;}
-    int GetDefaultNet(NetHandle &) { return hasDefault ? 0 : -1; }
-    int GetConnectionProperties(const NetHandle &, NetLinkInfo &l) { l.ifaceName_=iface; return 0; }
+    int terminalNetId=42;
+    int GetNetIdByIdentifier(const char*,std::list<int32_t> &ids) {
+        if(errors["netid-lookup"]) return errors["netid-lookup"];
+        ids={terminalNetId}; return 0;
+    }
+    int netId=10;NetLinkInfo upstreamProperties;
+    int GetDefaultNet(NetHandle &n) { n.id=netId;return hasDefault ? 0 : -1; }
+    int GetConnectionProperties(const NetHandle &, NetLinkInfo &l) { l=upstreamProperties;l.ifaceName_=iface; return 0; }
     int RegisterNetConnCallback(sptr<INetConnCallback>) { return call("monitor-add"); }
     int UnregisterNetConnCallback(sptr<INetConnCallback>) { return call("monitor-del"); }
     int RegisterNetSupplier(int, const char *, const std::set<NetCap> &, uint32_t &id) {
@@ -110,27 +118,45 @@ public:
     int NetworkAddInterface(int id,const char *) { assert(id==99); return call("local-add"); }
     int NetworkRemoveInterface(int,const char *) { return call("local-del"); }
     int NetworkAddRoute(int id,const char *,const char *dest,const char *via) {
-        assert(id==99 && std::string(dest)=="192.168.77.0/24" && std::string(via)=="0.0.0.0");
+        assert(id==99 && std::string(dest).find("/24")!=std::string::npos && std::string(via)=="0.0.0.0");
         return call("route-add");
     }
     int NetworkRemoveRoute(int,const char *,const char *,const char *) { return call("route-del"); }
     int StartDnsProxyListen() { return call("dns-start"); }
     int StopDnsProxyListen() { return call("dns-stop"); }
-    int ShareDnsSet(int) { return call("dns-set"); }
+    int ShareDnsSet(int n) {calls.push_back("dns-set:"+std::to_string(n));return call("dns-set");}
     int IpEnableForwarding(const char *) { return call("forward-add"); }
     int IpDisableForwarding(const char *) { return call("forward-del"); }
-    int IpfwdAddInterfaceForward(const char *,const std::string &) { return call("iface-forward-add"); }
-    int IpfwdRemoveInterfaceForward(const char *,const std::string &) { return call("iface-forward-del"); }
-    int EnableNat(const char *,const std::string &) { return call("nat-add"); }
-    int DisableNat(const char *,const std::string &) { return call("nat-del"); }
+    int IpfwdAddInterfaceForward(const std::string &d,const std::string &u) {
+        calls.push_back("iface-forward-add:"+d+":"+u);
+        int ret=call("iface-forward-add");return errors["iface-forward-add:"+d] ? errors["iface-forward-add:"+d] : ret;
+    }
+    int IpfwdRemoveInterfaceForward(const std::string &d,const std::string &u) {
+        calls.push_back("iface-forward-del:"+d+":"+u);
+        int ret=call("iface-forward-del");return errors["iface-forward-del:"+d] ? errors["iface-forward-del:"+d] : ret;
+    }
+    int EnableNat(const std::string &d,const std::string &u) {
+        calls.push_back("nat-add:"+d+":"+u);
+        int ret=call("nat-add");return errors["nat-add:"+d] ? errors["nat-add:"+d] : ret;
+    }
+    int DisableNat(const std::string &d,const std::string &u) {
+        calls.push_back("nat-del:"+d+":"+u);
+        int ret=call("nat-del");return errors["nat-del:"+d] ? errors["nat-del:"+d] : ret;
+    }
 };
 class NetworkShareTracker {
 public:
+    class NetsysCallback {public:
+        int32_t OnInterfaceAddressUpdated(const std::string &,const std::string &,int,int);
+        int32_t OnInterfaceAddressRemoved(const std::string &,const std::string &,int,int);
+    };
     std::deque<std::function<void()>> tasks;
     std::vector<NearlinkIpShareStatus> events;
     static NetworkShareTracker &GetInstance() { static NetworkShareTracker n; return n; }
     std::deque<std::function<void()>> delayed;
+    bool failSubmit=false;
     bool SubmitNearlinkTask(const std::function<void()> &f, uint64_t delay=0) {
+        if(failSubmit)return false;
         (delay ? delayed : tasks).push_back(f); return true;
     }
     void SendNearlinkStateChange(const NearlinkIpShareStatus &s) { events.push_back(s); }
@@ -140,6 +166,7 @@ public:
 namespace OHOS::Nearlink {
 using NearlinkIpShareRole = OHOS::NetManagerStandard::NearlinkIpShareRole;
 using NearlinkIpShareState = OHOS::NetManagerStandard::NearlinkIpShareState;
+struct NearlinkIpSharePeerLink {uint32_t slot=0;uint64_t generation=0;int32_t selectedMode=0;std::string ifaceName;bool releasing=false;bool active=true;};
 class NearlinkIpShareStatus { public:
     NearlinkIpShareRole role{NearlinkIpShareRole::NONE};
     NearlinkIpShareState state{NearlinkIpShareState::IDLE};
@@ -147,6 +174,7 @@ class NearlinkIpShareStatus { public:
     int32_t errorCode=0, selectedMode=0;
     uint64_t generation=0, sequence=0;
     bool serviceReady=false;
+    std::vector<NearlinkIpSharePeerLink> peerLinks;
 };
 enum class NearlinkIpShareMode { NONE=0, IPV4=1, DUAL_STACK=3 };
 using NearlinkIpShareCapabilities=OHOS::NetManagerStandard::NearlinkIpShareCapabilities;
@@ -165,9 +193,12 @@ public:
     NearlinkIpShareStatus snapshot;
     std::vector<NearlinkIpShareAddressEvidence> evidence;
     int UpdateValidatedAddress(const NearlinkIpShareAddressEvidence &e) { evidence.push_back(e); return call("evidence"); }
+    int CompleteGatewayPeerRelease(uint64_t g) { calls.push_back("peer-release:"+std::to_string(g));return 0; }
     int GetStatus(NearlinkIpShareStatus &s) { s=snapshot; return call("snapshot"); }
     int QueryNearlinkIpShareCapabilities(const std::string &, NearlinkIpShareCapabilities &) { return 0; }
-    int StartNearlinkGatewayWithMode(const std::string &peer, int) { return StartGateway(peer); }
+    int gatewayCapacity=0, supportedMaxTerminals=2;
+    int StartGatewayAny(int, int capacity) { gatewayCapacity=capacity;return call("nearlink-start"); }
+    int GetSupportedMaxTerminals() { return supportedMaxTerminals; }
     int StartNearlinkTerminalWithMode(const std::string &peer, int) { return StartTerminal(peer); }
     int observerRegistrations=0;
     bool serverHasObserver=false;
@@ -178,9 +209,13 @@ public:
         return 0;
     }
     int UnregisterObserver() { return 0; }
-    int StartGateway(const std::string &) { return call("nearlink-start"); }
     int StartTerminal(const std::string &) { return call("nearlink-start"); }
-    int Stop() { return call("nearlink-stop"); }
+    bool drainOnStop=true;
+    int Stop() {
+        int ret=call("nearlink-stop");
+        if (!ret && drainOnStop) { snapshot.role=NearlinkIpShareRole::NONE; snapshot.state=NearlinkIpShareState::IDLE; }
+        return ret;
+    }
     int IsPeerSupported(const std::string &,bool &b) { b=true; return 0; }
 };
 class NearlinkHost {

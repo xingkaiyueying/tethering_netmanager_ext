@@ -34,7 +34,6 @@ enum class SharingIfaceType {
     SHARING_WIFI,
     SHARING_USB,
     SHARING_BLUETOOTH,
-    SHARING_NEARLINK = 7,
 };
 enum class SharingIfaceState {
     SHARING_NIC_SERVING = 1,

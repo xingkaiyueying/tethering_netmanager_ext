@@ -28,6 +28,11 @@ declare namespace sharing {
   export type NearlinkIpShareRole = 'NONE' | 'GATEWAY' | 'TERMINAL';
   export type NearlinkIpShareMode = 'IPV4' | 'DUAL_STACK';
   export interface NearlinkIpShareStartOptions { mode: NearlinkIpShareMode; }
+  export interface NearlinkGatewayOptions {
+    mode: NearlinkIpShareMode;
+    /** APP-selected session admission limit: integer 1..32. Change after stopping the gateway. */
+    maxTerminals: number;
+  }
   export interface NearlinkIpShareCapabilities {
     identifierPresent: boolean;
     discoveryState: number;
@@ -61,7 +66,18 @@ declare namespace sharing {
     'IDLE' | 'STARTING' | 'DISCOVERING' | 'CONFIGURING' | 'IFACE_READY' | 'CHANNEL_READY' |
     'DHCP' | 'SERVING' | 'SERVING_NO_UPSTREAM' | 'ACTIVE' | 'STOPPING' | 'ERROR';
 
+  export interface NearlinkIpSharePeerStatus {
+    peerId: string; slot: number; contextId: string; generation: string; sequence: string;
+    state: 'RESERVED' | 'CONFIGURING' | 'ACTIVE' | 'LIMITED' | 'RELEASING' | 'FAILED';
+    ifaceName: string; selectedMode: NearlinkIpShareMode; hasUpstream: boolean;
+    ipv4: NearlinkIpShareFamilyStatus; ipv6: NearlinkIpShareFamilyStatus;
+  }
   export interface NearlinkIpShareStatus {
+    /** Upper bound of accepted APP settings, not measured radio concurrency. */
+    supportedMaxTerminals: number;
+    /** Admission limit of the running gateway, supplied by the APP at start. */
+    maxTerminals: number;
+    occupiedTerminals: number; activeTerminals: number; peers: NearlinkIpSharePeerStatus[];
     role: NearlinkIpShareRole;
     state: NearlinkIpShareState;
     peerAddress: string;
@@ -86,7 +102,9 @@ declare namespace sharing {
   /** Promise resolution means that the request was accepted; observe or query status for completion. */
   function isNearlinkIpShareSupported(peerAddress: string): Promise<boolean>;
   function getNearlinkIpShareCapabilities(peerAddress: string): Promise<NearlinkIpShareCapabilities>;
-  function startNearlinkGateway(peerAddress: string, options?: NearlinkIpShareStartOptions): Promise<void>;
+  function startNearlinkGateway(options: NearlinkGatewayOptions): Promise<void>;
+  /** Returns the upper bound accepted by gateway options; does not measure radio concurrency. */
+  function getNearlinkIpShareSupportedMaxTerminals(): Promise<number>;
   function stopNearlinkGateway(): Promise<void>;
   function startNearlinkTerminal(gatewayAddress: string, options?: NearlinkIpShareStartOptions): Promise<void>;
   function stopNearlinkTerminal(): Promise<void>;

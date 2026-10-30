@@ -16,6 +16,7 @@ with tempfile.TemporaryDirectory(prefix="p2-s4-napi-") as directory:
 #include <cstdint>
 #include <string>
 class Parcel { public:
+size_t GetDataSize() const {return 0;}
 bool WriteBool(bool) {return true;} bool WriteInt32(int32_t) {return true;}
 bool WriteUint32(uint32_t) {return true;} bool WriteUint64(uint64_t) {return true;}
 bool WriteString(const std::string&) {return true;}
@@ -32,13 +33,14 @@ class Parcelable {public: virtual ~Parcelable()=default; virtual bool Marshallin
 #include <string>
 #include <vector>
 struct Value {
- std::string text; int64_t number=0; bool flag=false;
+ std::string text; double number=0; bool flag=false;
  std::map<std::string,Value*> fields; std::vector<Value*> items;
  int type=3;
 };
 using napi_env=void*; using napi_value=Value*;
 enum napi_status {napi_ok};
-enum napi_valuetype {napi_undefined=0,napi_null=1,napi_string=2,napi_object=3};
+enum napi_valuetype {napi_undefined=0,napi_null=1,napi_string=2,napi_object=3,napi_number=4};
+inline napi_status napi_get_value_double(napi_env,napi_value value,double* result) { *result=value->number; return napi_ok; }
 inline napi_status napi_set_named_property(napi_env,napi_value object,const char* key,napi_value value) {
  object->fields[key]=value; return napi_ok;
 }
@@ -75,7 +77,7 @@ inline napi_valuetype GetValueType(napi_env,napi_value v) {return static_cast<na
 inline std::string GetStringFromValueUtf8(napi_env,napi_value v) {return v->text;}
 inline napi_value CreateObject(napi_env) {return new Value;}
 inline napi_value CreateArray(napi_env,size_t count) {auto v=new Value;v->items.resize(count);return v;}
-inline napi_value CreateUint32(napi_env,uint32_t n) {auto v=new Value;v->number=n;return v;}
+inline napi_value CreateUint32(napi_env,uint32_t n) {auto v=new Value;v->number=n;v->type=napi_number;return v;}
 inline napi_value CreateStringUtf8(napi_env,const std::string &s) {auto v=new Value;v->text=s;v->type=napi_string;return v;}
 inline void SetArrayElement(napi_env,napi_value v,uint32_t index,napi_value item) {v->items.at(index)=item;}
 inline void SetStringPropertyUtf8(napi_env,napi_value v,const std::string &key,const std::string &s) {
@@ -112,6 +114,25 @@ int main() {
  arguments[0]=NapiUtils::CreateStringUtf8(nullptr,"not-an-address");
  NearlinkIpShareContext badPeer(nullptr,manager);badPeer.ParseParams(arguments,1);
  assert(!badPeer.parsed&&badPeer.throws);
+ auto gateway=NapiUtils::CreateObject(nullptr);
+ gateway->fields["mode"]=NapiUtils::CreateStringUtf8(nullptr,"IPV4");
+ gateway->fields["maxTerminals"]=NapiUtils::CreateUint32(nullptr,2);
+ arguments[0]=gateway;
+ NearlinkIpShareContext multi(nullptr,manager);multi.ParseParams(arguments,1);
+ assert(multi.parsed&&multi.HasMaxTerminals()&&multi.GetMaxTerminals()==2&&multi.GetPeerAddress().empty());
+ gateway->fields["maxTerminals"]->number=1.5;
+ NearlinkIpShareContext fraction(nullptr,manager);fraction.ParseParams(arguments,1);
+ assert(!fraction.parsed&&fraction.throws);
+ gateway->fields["maxTerminals"]->number=0;
+ NearlinkIpShareContext zero(nullptr,manager);zero.ParseParams(arguments,1);
+ assert(!zero.parsed&&zero.throws);
+ for (double value : {-1.0, 33.0, 1e100}) {
+  gateway->fields["maxTerminals"]->number=value;
+  NearlinkIpShareContext bad(nullptr,manager);bad.ParseParams(arguments,1);assert(!bad.parsed&&bad.throws);
+ }
+ gateway->fields["maxTerminals"]=NapiUtils::CreateStringUtf8(nullptr,"2");
+ NearlinkIpShareContext textCapacity(nullptr,manager);textCapacity.ParseParams(arguments,1);
+ assert(!textCapacity.parsed&&textCapacity.throws);
  NearlinkIpShareCapabilities caps;
  caps.identifierPresent=true;caps.peerCapabilityKnown=false;caps.localModes={1,3};caps.peerModes.clear();
  auto c=NearlinkIpShareConverter::CapabilitiesToJs(nullptr,caps);
@@ -136,6 +157,17 @@ int main() {
  assert(v->fields.at("ipv6")->fields.at("validation")->text=="FAILED");
  assert(v->fields.at("ipv6")->fields.at("addresses")->items.at(0)->fields.at("prefixLength")->number==64);
  assert(v->fields.count("netId")==0);
+ state.supportedMaxTerminals=7;state.maxTerminals=2;state.occupiedTerminals=2;state.activeTerminals=1;
+ NearlinkIpSharePeerStatus p;p.slot=0;p.generation=UINT64_C(9007199254740995);p.sequence=43;
+ p.peerId="slot:0/9007199254740995";p.state=2;p.selectedMode=1;
+ state.peers.push_back(p);p.slot=1;p.state=3;p.selectedMode=3;state.peers.push_back(p);
+ v=NearlinkIpShareConverter::ToJs(nullptr,state);
+ assert(v->fields.at("supportedMaxTerminals")->number==7);
+ assert(v->fields.at("occupiedTerminals")->number==2);
+ assert(v->fields.at("peers")->items.size()==2);
+ auto second=v->fields.at("peers")->items[1];
+ assert(second->fields.at("state")->text=="LIMITED"&&second->fields.at("selectedMode")->text=="DUAL_STACK");
+ assert(second->fields.at("generation")->text=="9007199254740995");
  puts("S4 NAPI: legacy and dual mode parsing, invalid input, capabilities, families, exact uint64 strings PASS");
 }
 ''', encoding="utf-8")

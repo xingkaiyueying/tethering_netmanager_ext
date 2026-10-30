@@ -27,8 +27,7 @@ int32_t NearlinkIpShareEventCallbackStub::OnRemoteRequest(uint32_t code, Message
     if (data.ReadInterfaceToken() != INearlinkIpShareEventCallback::GetDescriptor()) {
         return NETMANAGER_EXT_ERR_DESCRIPTOR_MISMATCH;
     }
-    if (code != static_cast<uint32_t>(
-        INearlinkIpShareEventCallback::Message::NEARLINK_IP_SHARE_STATE_CHANGED)) {
+    if (code != static_cast<uint32_t>(INearlinkIpShareEventCallback::Message::NEARLINK_IP_SHARE_STATE_CHANGED)) {
         return IPCObjectStub::OnRemoteRequest(code, data, reply, option);
     }
     std::unique_ptr<NearlinkIpShareStatus> status(data.ReadParcelable<NearlinkIpShareStatus>());

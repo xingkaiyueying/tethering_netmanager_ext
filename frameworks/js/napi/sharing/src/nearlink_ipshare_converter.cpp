@@ -23,30 +23,48 @@ namespace {
 const char *RoleName(NearlinkIpShareRole role)
 {
     switch (role) {
-        case NearlinkIpShareRole::GATEWAY: return "GATEWAY";
-        case NearlinkIpShareRole::TERMINAL: return "TERMINAL";
-        default: return "NONE";
+        case NearlinkIpShareRole::GATEWAY:
+            return "GATEWAY";
+        case NearlinkIpShareRole::TERMINAL:
+            return "TERMINAL";
+        default:
+            return "NONE";
     }
 }
 
 const char *StateName(NearlinkIpShareState state)
 {
     switch (state) {
-        case NearlinkIpShareState::STARTING: return "STARTING";
-        case NearlinkIpShareState::DISCOVERING: return "DISCOVERING";
-        case NearlinkIpShareState::CONFIGURING: return "CONFIGURING";
-        case NearlinkIpShareState::IFACE_READY: return "IFACE_READY";
-        case NearlinkIpShareState::CHANNEL_READY: return "CHANNEL_READY";
-        case NearlinkIpShareState::DHCP: return "DHCP";
-        case NearlinkIpShareState::SERVING: return "SERVING";
-        case NearlinkIpShareState::SERVING_NO_UPSTREAM: return "SERVING_NO_UPSTREAM";
-        case NearlinkIpShareState::ACTIVE: return "ACTIVE";
-        case NearlinkIpShareState::STOPPING: return "STOPPING";
-        case NearlinkIpShareState::ERROR: return "ERROR";
-        default: return "IDLE";
+        case NearlinkIpShareState::STARTING:
+            return "STARTING";
+        case NearlinkIpShareState::DISCOVERING:
+            return "DISCOVERING";
+        case NearlinkIpShareState::CONFIGURING:
+            return "CONFIGURING";
+        case NearlinkIpShareState::IFACE_READY:
+            return "IFACE_READY";
+        case NearlinkIpShareState::CHANNEL_READY:
+            return "CHANNEL_READY";
+        case NearlinkIpShareState::DHCP:
+            return "DHCP";
+        case NearlinkIpShareState::SERVING:
+            return "SERVING";
+        case NearlinkIpShareState::SERVING_NO_UPSTREAM:
+            return "SERVING_NO_UPSTREAM";
+        case NearlinkIpShareState::ACTIVE:
+            return "ACTIVE";
+        case NearlinkIpShareState::STOPPING:
+            return "STOPPING";
+        case NearlinkIpShareState::ERROR:
+            return "ERROR";
+        default:
+            return "IDLE";
     }
 }
-const char *ModeName(int32_t mode) { return mode == 3 ? "DUAL_STACK" : "IPV4"; }
+const char *ModeName(int32_t mode)
+{
+    return mode == 3 ? "DUAL_STACK" : "IPV4";
+}
 const char *PhaseName(int32_t phase)
 {
     constexpr const char *NAMES[] = {"DISABLED", "CONFIGURING", "AVAILABLE", "FAILED"};
@@ -61,7 +79,10 @@ void Put(napi_env env, napi_value object, const char *key, napi_value value)
 {
     napi_set_named_property(env, object, key, value);
 }
-napi_value Number(napi_env env, uint32_t value) { return NapiUtils::CreateUint32(env, value); }
+napi_value Number(napi_env env, uint32_t value)
+{
+    return NapiUtils::CreateUint32(env, value);
+}
 napi_value AddressToJs(napi_env env, const NearlinkIpShareAddress &address)
 {
     auto value = NapiUtils::CreateObject(env);
@@ -95,10 +116,12 @@ napi_value DnsToJs(napi_env env, const NearlinkIpShareDns &dns)
     NapiUtils::SetBooleanProperty(env, value, "lifetimeKnown", dns.lifetimeKnown);
     return value;
 }
-template<class T, class F> napi_value ListToJs(napi_env env, const std::vector<T> &items, F convert)
+template <class T, class F> napi_value ListToJs(napi_env env, const std::vector<T> &items, F convert)
 {
     auto array = NapiUtils::CreateArray(env, items.size());
-    for (size_t i = 0; i < items.size(); ++i) NapiUtils::SetArrayElement(env, array, i, convert(env, items[i]));
+    for (size_t i = 0; i < items.size(); ++i) {
+        NapiUtils::SetArrayElement(env, array, i, convert(env, items[i]));
+    }
     return array;
 }
 napi_value FamilyToJs(napi_env env, const NearlinkIpShareFamilyStatus &family)
@@ -122,6 +145,24 @@ napi_value FamilyToJs(napi_env env, const NearlinkIpShareFamilyStatus &family)
     }
     return value;
 }
+napi_value PeerToJs(napi_env env, const NearlinkIpSharePeerStatus &peer)
+{
+    constexpr const char *STATES[] = {"RESERVED", "CONFIGURING", "ACTIVE", "LIMITED", "RELEASING", "FAILED"};
+    auto value = NapiUtils::CreateObject(env);
+    Put(env, value, "slot", Number(env, peer.slot));
+    NapiUtils::SetStringPropertyUtf8(env, value, "peerId", peer.peerId);
+    NapiUtils::SetStringPropertyUtf8(env, value, "contextId", peer.contextId);
+    NapiUtils::SetStringPropertyUtf8(env, value, "ifaceName", peer.ifaceName);
+    NapiUtils::SetStringPropertyUtf8(env, value, "generation", std::to_string(peer.generation));
+    NapiUtils::SetStringPropertyUtf8(env, value, "sequence", std::to_string(peer.sequence));
+    NapiUtils::SetStringPropertyUtf8(env, value, "state",
+                                     peer.state >= 0 && peer.state <= 5 ? STATES[peer.state] : "FAILED");
+    NapiUtils::SetStringPropertyUtf8(env, value, "selectedMode", ModeName(peer.selectedMode));
+    NapiUtils::SetBooleanProperty(env, value, "hasUpstream", peer.hasUpstream);
+    Put(env, value, "ipv4", FamilyToJs(env, peer.ipv4));
+    Put(env, value, "ipv6", FamilyToJs(env, peer.ipv6));
+    return value;
+}
 } // namespace
 
 napi_value NearlinkIpShareConverter::ToJs(napi_env env, const NearlinkIpShareStatus &status)
@@ -139,12 +180,23 @@ napi_value NearlinkIpShareConverter::ToJs(napi_env env, const NearlinkIpShareSta
     NapiUtils::SetStringPropertyUtf8(env, value, "generation", std::to_string(status.generation));
     NapiUtils::SetStringPropertyUtf8(env, value, "sequence", std::to_string(status.sequence));
     NapiUtils::SetStringPropertyUtf8(env, value, "requestedMode", ModeName(status.requestedMode));
-    if (status.selectedMode != 0) NapiUtils::SetStringPropertyUtf8(env, value, "selectedMode", ModeName(status.selectedMode));
-    if (!status.fallbackReason.empty()) NapiUtils::SetStringPropertyUtf8(env, value, "fallbackReason", status.fallbackReason);
-    if (status.netId >= 0) NapiUtils::SetInt32Property(env, value, "netId", status.netId);
+    if (status.selectedMode != 0) {
+        NapiUtils::SetStringPropertyUtf8(env, value, "selectedMode", ModeName(status.selectedMode));
+    }
+    if (!status.fallbackReason.empty()) {
+        NapiUtils::SetStringPropertyUtf8(env, value, "fallbackReason", status.fallbackReason);
+    }
+    if (status.netId >= 0) {
+        NapiUtils::SetInt32Property(env, value, "netId", status.netId);
+    }
     NapiUtils::SetBooleanProperty(env, value, "serviceReady", status.serviceReady);
     Put(env, value, "ipv4", FamilyToJs(env, status.ipv4));
     Put(env, value, "ipv6", FamilyToJs(env, status.ipv6));
+    NapiUtils::SetInt32Property(env, value, "supportedMaxTerminals", status.supportedMaxTerminals);
+    NapiUtils::SetInt32Property(env, value, "maxTerminals", status.maxTerminals);
+    Put(env, value, "occupiedTerminals", Number(env, status.occupiedTerminals));
+    Put(env, value, "activeTerminals", Number(env, status.activeTerminals));
+    Put(env, value, "peers", ListToJs(env, status.peers, PeerToJs));
     return value;
 }
 

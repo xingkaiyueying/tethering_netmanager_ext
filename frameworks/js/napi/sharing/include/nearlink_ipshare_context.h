@@ -28,6 +28,10 @@ public:
     const std::string &GetPeerAddress() const;
     int32_t GetMode() const;
     bool HasMode() const;
+    bool HasMaxTerminals() const;
+    int32_t GetMaxTerminals() const;
+    void SetSupportedMaxTerminals(int32_t value);
+    int32_t GetSupportedMaxTerminals() const;
     void SetCapabilities(const NearlinkIpShareCapabilities &capabilities);
     const NearlinkIpShareCapabilities &GetCapabilities() const;
     void SetSupported(bool supported);
@@ -37,10 +41,13 @@ public:
 
 private:
     std::string peerAddress_;
-    int32_t mode_ {1};
-    bool hasMode_ {false};
+    int32_t mode_{1};
+    bool hasMode_{false};
+    bool hasMaxTerminals_{false};
+    int32_t maxTerminals_{0};
+    int32_t supportedMaxTerminals_{0};
     NearlinkIpShareCapabilities capabilities_;
-    bool supported_ {false};
+    bool supported_{false};
     NearlinkIpShareStatus status_;
 };
 } // namespace OHOS::NetManagerStandard

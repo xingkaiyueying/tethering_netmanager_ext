@@ -15,18 +15,22 @@
 #ifndef NETMANAGER_EXT_NEARLINK_IPSHARE_CONTROLLER_H
 #define NETMANAGER_EXT_NEARLINK_IPSHARE_CONTROLLER_H
 
+#include "nearlink_peer_address_pool.h"
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 
-#include "dhcp_result_event.h"
 #include "dhcp_l3_ipv6.h"
+#include "dhcp_result_event.h"
 #include "nearlink_family_network.h"
-#include "nearlink_ipv6_runtime.h"
 #include "nearlink_ip_share_status.h"
+#include "nearlink_ipv6_runtime.h"
+#include "nearlink_upstream_signal.h"
 #include "networkshare_configuration.h"
 
 namespace OHOS::Nearlink {
@@ -46,7 +50,8 @@ public:
     bool Init();
     void Uninit();
     int32_t IsSupported(const std::string &peerAddress, bool &supported);
-    int32_t StartGateway(const std::string &peerAddress, int32_t mode = 1);
+    int32_t StartGatewayAny(int32_t mode, int32_t maxTerminals);
+    int32_t GetSupportedMaxTerminals(int32_t &supportedMaxTerminals);
     int32_t StopGateway();
     int32_t StartTerminal(const std::string &gatewayAddress, int32_t mode = 1);
     int32_t StopTerminal();
@@ -58,14 +63,47 @@ public:
     void OnDhcpFailure(int32_t status, const std::string &iface, const std::string &reason, uint64_t session = 0);
     void OnUpstreamChanged();
     void OnIpv6Addresses(const std::string &iface, const DhcpL3Ipv6Snapshot &snapshot, uint64_t session = 0);
+    void OnInterfaceAddressChanged(const std::string &iface);
 
 private:
     NearlinkIpShareController() = default;
-    int32_t Start(NearlinkIpShareRole role, const std::string &peerAddress, int32_t mode);
+    int32_t Start(NearlinkIpShareRole role, const std::string &peerAddress, int32_t mode, int32_t maxTerminals = 0);
     int32_t Stop(NearlinkIpShareRole expectedRole);
+    void ContinueStop(uint32_t attempt);
+    void RetryTerminalStart(uint32_t drainAttempt = 0);
     void HandleNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
-    void ConfigureGateway();
-    int32_t ConfigureGatewayIpv4();
+    void ReconcileGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
+    void ConfigureGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
+    struct PeerAddressContext {
+        uint64_t generation{0};
+        uint32_t slot{0}, ifindex{0};
+        int32_t mode{0};
+        std::string iface;
+        NearlinkPeerAddresses addresses;
+        bool interfaceAdded{false}, addressAdded{false}, routeAdded{false}, dhcpStarted{false};
+        bool ipv6Prepared{false}, ipv6Ready{false};
+        bool forwardAttempted{false}, interfaceForwarding{false}, natEnabled{false}, natAttempted{false},
+            ipv6Routed{false};
+        std::string upstreamIface;
+        int32_t upstreamNetId{-1};
+        bool releasing{false};
+        int32_t upstreamError{0};
+        int32_t ipv4Error{0}, ipv6Error{0};
+        std::chrono::steady_clock::time_point ipv6PendingSince{};
+        NearlinkIpv6Runtime ipv6;
+        std::unique_ptr<NearlinkUpstreamSignal> upstreamSignal;
+    };
+    bool CleanupGatewayPeer(PeerAddressContext &peer);
+    int32_t CleanupGatewayPeerUpstream(PeerAddressContext &peer);
+    void ConfigureGatewayPeerUpstreams(const NetLinkInfo *upstream, int32_t netId);
+    bool PrepareGatewayPeerIpv6(PeerAddressContext &peer, const NetLinkInfo *upstream, bool present);
+    int32_t ConfigureGatewayPeerIpv4(PeerAddressContext &peer, const NetLinkInfo *upstream);
+    std::map<uint32_t, PeerAddressContext> addressPeers_;
+    std::vector<NearlinkIpSharePeerStatus> gatewayPeerLinks_;
+    void ConfigureGatewayPeerAddress(PeerAddressContext &peer, const NetLinkInfo *upstream);
+    void ProjectGatewayPeerLocked(const PeerAddressContext &peer);
+    bool ConfigureGatewayPeerUpstream(PeerAddressContext &peer, const NetLinkInfo *upstream, bool present, bool hasV4);
+    void RefreshGatewayStatusLocked();
     void StartTerminalDhcp();
     void ConfigureUpstream();
     int32_t CleanupUpstream();
@@ -78,10 +116,23 @@ private:
     void ScheduleMaintenance(uint64_t generation);
     void RefreshFamilyStatus();
     void ValidateFamilies();
-    uint64_t networkRevision_{0};
-    bool validationInFlight_{false};
-    std::chrono::steady_clock::time_point nextValidation_{};
-    bool Cleanup(bool publishIdle = true);
+    void RequestFamilyValidation();
+    void NotifyGatewayUpstream(PeerAddressContext &peer, bool ipv4);
+    bool PollTerminalUpstream();
+    bool RemoteFamilyBlocked(bool ipv6) const;
+    void ApplyRemoteFamilyStatus(NearlinkIpShareFamilyStatus &family, bool ipv6);
+    NearlinkUpstreamSignal upstreamSignal_;
+    NearlinkUpstreamSignal::State gatewayUpstream_;
+    bool validationPending_{false};
+    std::set<std::pair<uint64_t, uint32_t>> addressReconcilePending_;
+    struct FamilyValidationState {
+        uint64_t revision{0};
+        bool inFlight{false};
+        std::chrono::steady_clock::time_point next{};
+    };
+    std::array<FamilyValidationState, 2> validation_{};
+    std::array<NetLinkInfo, 2> appliedFamilies_{};
+    bool Cleanup(bool publishIdle = true, bool deferFailure = false);
     void Fail(const std::string &stage, int32_t code);
     void Publish(NearlinkIpShareState state, const std::string &errorStage = {}, int32_t errorCode = 0);
     static bool ParsePeerAddress(const std::string &address, std::array<uint8_t, 6> &bytes);
@@ -97,16 +148,13 @@ private:
     bool stopRequested_{false};
     std::atomic<uint64_t> generation_{0};
     bool gatewayReserved_{false};
+    int32_t maxTerminals_{0};
     bool nearlinkStarted_{false};
-    bool localInterfaceAdded_{false};
-    bool localRouteAdded_{false};
-    bool addressConfigured_{false};
-    bool dhcpServerStarted_{false};
+    bool terminalRestartPending_{false};
     bool dnsProxyStarted_{false};
     bool dnsUpstreamReady_{false};
     bool forwardingEnabled_{false};
-    bool interfaceForwarding_{false};
-    bool natEnabled_{false};
+    bool forwardingAttempted_{false};
     bool dhcpClientStarted_{false};
     std::chrono::steady_clock::time_point leaseExpiry_{};
     uint32_t netSupplierId_{0};
@@ -123,8 +171,6 @@ private:
     bool supplierAvailable_{false};
     NearlinkIpv6Runtime ipv6Runtime_;
     bool ipv6Prepared_{false};
-    std::chrono::steady_clock::time_point ipv6GatewayPendingSince_{};
-    void ConfigureGatewayIpv6(const NetLinkInfo *upstream);
     DhcpL3Ipv6Snapshot ipv6Addresses_{};
     std::chrono::steady_clock::time_point ipv6Observed_{};
     DhcpResult ipv6Result_{};

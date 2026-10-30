@@ -300,10 +300,11 @@ int32_t CheckNearlinkIpSharePermission()
         return NETMANAGER_EXT_ERR_NOT_SYSTEM_CALL;
     }
     return NetManagerPermission::CheckPermission(Permission::CONNECTIVITY_INTERNAL) &&
-        NetManagerPermission::CheckPermission("ohos.permission.ACCESS_NEARLINK") ?
-        NETMANAGER_EXT_SUCCESS : NETMANAGER_EXT_ERR_PERMISSION_DENIED;
+                   NetManagerPermission::CheckPermission("ohos.permission.ACCESS_NEARLINK")
+               ? NETMANAGER_EXT_SUCCESS
+               : NETMANAGER_EXT_ERR_PERMISSION_DENIED;
 }
-}
+} // namespace
 
 int32_t NetworkShareService::IsNearlinkIpShareSupported(const std::string &peerAddress, bool &supported)
 {
@@ -314,7 +315,8 @@ int32_t NetworkShareService::IsNearlinkIpShareSupported(const std::string &peerA
     return NearlinkIpShareController::GetInstance()->IsSupported(peerAddress, supported);
 }
 
-int32_t NetworkShareService::QueryNearlinkIpShareCapabilities(const std::string &peerAddress, NearlinkIpShareCapabilities &capabilities)
+int32_t NetworkShareService::QueryNearlinkIpShareCapabilities(const std::string &peerAddress,
+                                                              NearlinkIpShareCapabilities &capabilities)
 {
     int32_t permission = CheckNearlinkIpSharePermission();
     if (permission != NETMANAGER_EXT_SUCCESS) {
@@ -323,13 +325,20 @@ int32_t NetworkShareService::QueryNearlinkIpShareCapabilities(const std::string 
     return NearlinkIpShareController::GetInstance()->QueryCapabilities(peerAddress, capabilities);
 }
 
-int32_t NetworkShareService::StartNearlinkGatewayWithMode(const std::string &peerAddress, int32_t mode)
+int32_t NetworkShareService::StartNearlinkGatewayAny(int32_t mode, int32_t maxTerminals)
 {
     int32_t permission = CheckNearlinkIpSharePermission();
-    if (permission != NETMANAGER_EXT_SUCCESS) {
+    if (permission != NETMANAGER_EXT_SUCCESS)
         return permission;
-    }
-    return NearlinkIpShareController::GetInstance()->StartGateway(peerAddress, mode);
+    return NearlinkIpShareController::GetInstance()->StartGatewayAny(mode, maxTerminals);
+}
+
+int32_t NetworkShareService::GetNearlinkIpShareSupportedMaxTerminals(int32_t &supportedMaxTerminals)
+{
+    int32_t permission = CheckNearlinkIpSharePermission();
+    if (permission != NETMANAGER_EXT_SUCCESS)
+        return permission;
+    return NearlinkIpShareController::GetInstance()->GetSupportedMaxTerminals(supportedMaxTerminals);
 }
 
 int32_t NetworkShareService::StartNearlinkTerminalWithMode(const std::string &peerAddress, int32_t mode)
@@ -339,15 +348,6 @@ int32_t NetworkShareService::StartNearlinkTerminalWithMode(const std::string &pe
         return permission;
     }
     return NearlinkIpShareController::GetInstance()->StartTerminal(peerAddress, mode);
-}
-
-int32_t NetworkShareService::StartNearlinkGateway(const std::string &peerAddress)
-{
-    int32_t permission = CheckNearlinkIpSharePermission();
-    if (permission != NETMANAGER_EXT_SUCCESS) {
-        return permission;
-    }
-    return NearlinkIpShareController::GetInstance()->StartGateway(peerAddress);
 }
 
 int32_t NetworkShareService::StopNearlinkGateway()
@@ -386,8 +386,7 @@ int32_t NetworkShareService::GetNearlinkIpShareStatus(NearlinkIpShareStatus &sta
     return NearlinkIpShareController::GetInstance()->GetStatus(status);
 }
 
-int32_t NetworkShareService::RegisterNearlinkIpShareEvent(
-    const sptr<INearlinkIpShareEventCallback> &callback)
+int32_t NetworkShareService::RegisterNearlinkIpShareEvent(const sptr<INearlinkIpShareEventCallback> &callback)
 {
     int32_t permission = CheckNearlinkIpSharePermission();
     if (permission != NETMANAGER_EXT_SUCCESS) {
@@ -403,8 +402,7 @@ int32_t NetworkShareService::RegisterNearlinkIpShareEvent(
     return ret;
 }
 
-int32_t NetworkShareService::UnregisterNearlinkIpShareEvent(
-    const sptr<INearlinkIpShareEventCallback> &callback)
+int32_t NetworkShareService::UnregisterNearlinkIpShareEvent(const sptr<INearlinkIpShareEventCallback> &callback)
 {
     int32_t permission = CheckNearlinkIpSharePermission();
     if (permission != NETMANAGER_EXT_SUCCESS) {

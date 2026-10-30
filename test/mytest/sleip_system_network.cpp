@@ -5,6 +5,7 @@
 #include "nativetoken_kit.h"
 #include "token_setproc.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 using namespace OHOS::NetManagerStandard;
@@ -21,7 +22,12 @@ extern "C" int SleipSystemNetwork(int argc, char **argv)
     auto &client = *OHOS::DelayedSingleton<NetworkShareClient>::GetInstance();
     int32_t ret = -1;
     if (argc == 5 && strcmp(argv[2], "start") == 0) {
-        if (strcmp(argv[3], "G") == 0) ret = client.StartNearlinkGatewayWithMode(argv[4], 3);
+        if (strcmp(argv[3], "G") == 0) {
+            char *end = nullptr;
+            long capacity = strtol(argv[4], &end, 10);
+            if (end == argv[4] || *end != '\0' || capacity < 1 || capacity > 32) return 2;
+            ret = client.StartNearlinkGatewayAny(3, static_cast<int32_t>(capacity));
+        }
         else if (strcmp(argv[3], "A") == 0) ret = client.StartNearlinkTerminalWithMode(argv[4], 3);
     } else if (argc == 4 && strcmp(argv[2], "stop") == 0) {
         if (strcmp(argv[3], "G") == 0) ret = client.StopNearlinkGateway();
