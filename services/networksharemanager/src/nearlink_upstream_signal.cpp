@@ -20,7 +20,7 @@ namespace OHOS::NetManagerStandard {
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr uint16_t SIGNAL_PORT = 30201;
-constexpr size_t FRAME_SIZE = 32;
+constexpr size_t FRAME_SIZE = 36;
 constexpr uint8_t QUERY = 1, STATUS = 2, ACK = 3;
 constexpr auto RETRY = std::chrono::seconds(1);
 constexpr auto REFRESH = std::chrono::seconds(5);
@@ -43,26 +43,30 @@ bool BindNetwork(int fd, int32_t netId)
     return setsockopt(fd, SOL_SOCKET, SO_MARK, &mark.intValue, sizeof(mark.intValue)) == 0;
 }
 
-Frame Encode(uint8_t kind, uint8_t mask, const Token &token, uint64_t sequence)
+Frame Encode(uint8_t kind, uint8_t mask, const Token &token, uint64_t sequence,
+             const std::string &gatewayIpv4 = {})
 {
-    Frame frame{'N', 'L', 'U', '1', kind, mask};
+    Frame frame{'N', 'L', 'U', '2', kind, mask};
     std::copy(token.begin(), token.end(), frame.begin() + 8);
     for (size_t i = 0; i < 8; ++i) {
         frame[31 - i] = static_cast<uint8_t>(sequence >> (i * 8));
+    }
+    if (kind == STATUS && !gatewayIpv4.empty()) {
+        (void)inet_pton(AF_INET, gatewayIpv4.c_str(), frame.data() + 32);
     }
     return frame;
 }
 
 bool Decode(const Frame &frame, uint8_t &kind, uint8_t &mask, Token &token, uint64_t &sequence)
 {
-    if (memcmp(frame.data(), "NLU1", 4) != 0 || frame[6] || frame[7] || frame[5] > 3) {
+    if (memcmp(frame.data(), "NLU2", 4) != 0 || frame[6] || frame[7] || frame[5] > 3) {
         return false;
     }
     kind = frame[4];
     mask = frame[5];
     std::copy(frame.begin() + 8, frame.begin() + 24, token.begin());
     sequence = 0;
-    for (size_t i = 24; i < frame.size(); ++i) {
+    for (size_t i = 24; i < 32; ++i) {
         sequence = (sequence << 8) | frame[i];
     }
     return std::any_of(token.begin(), token.end(), [](uint8_t byte) { return byte != 0; }) &&
@@ -104,6 +108,13 @@ bool Endpoint(sockaddr_storage &out, const std::string &address, bool ipv6, uint
 } // namespace
 
 struct NearlinkUpstreamSignal::Impl {
+    struct Subscriber {
+        uint64_t generation{0};
+        sockaddr_storage peer{};
+        Token token{};
+        uint64_t acknowledged{0};
+        Clock::time_point seen{}, sent{};
+    };
     struct Socket {
         int fd{-1};
         sockaddr_storage peer{};
@@ -111,9 +122,11 @@ struct NearlinkUpstreamSignal::Impl {
         Token token{};
         uint64_t acknowledged{0};
         Clock::time_point seen{}, sent{}, queried{}, openRetry{};
+        std::vector<Subscriber> subscribers;
     };
     Link link;
     bool gateway{false};
+    bool configurationChanged{false};
     std::array<Socket, 2> sockets;
     Token token{};
     State state;
@@ -134,8 +147,9 @@ struct NearlinkUpstreamSignal::Impl {
     bool Matches(const Link &other, bool server) const
     {
         return gateway == server && link.iface == other.iface && link.ifindex == other.ifindex &&
-               link.netId == other.netId && link.localIpv4 == other.localIpv4 &&
-               link.gatewayIpv4 == other.gatewayIpv4 && link.ipv6 == other.ipv6;
+               link.netId == other.netId && (server || link.localIpv4 == other.localIpv4) &&
+               link.gatewayIpv4 == other.gatewayIpv4 && link.ipv6 == other.ipv6 &&
+               link.localIpv6 == other.localIpv6 && link.gatewayIpv6 == other.gatewayIpv6;
     }
 
     void Open(Socket &entry, bool ipv6, Clock::time_point now)
@@ -145,8 +159,8 @@ struct NearlinkUpstreamSignal::Impl {
         }
         entry.openRetry = now + REFRESH;
         sockaddr_storage local{}, remote{};
-        const std::string address = ipv6 ? (gateway ? "fe80::1" : "fe80::2") : link.localIpv4;
-        const std::string target = ipv6 ? "fe80::1" : link.gatewayIpv4;
+        const std::string address = ipv6 ? link.localIpv6 : (gateway ? "0.0.0.0" : link.localIpv4);
+        const std::string target = ipv6 ? link.gatewayIpv6 : link.gatewayIpv4;
         if (!Endpoint(local, address, ipv6, gateway ? SIGNAL_PORT : 0, link.ifindex) ||
             (!gateway && !Endpoint(remote, target, ipv6, SIGNAL_PORT, link.ifindex))) {
             return;
@@ -188,28 +202,86 @@ struct NearlinkUpstreamSignal::Impl {
         }
     }
 
+    uint64_t MemberGeneration(const sockaddr_storage &source) const
+    {
+        for (const auto &member : link.members) {
+            std::vector<std::string> addresses = source.ss_family == AF_INET ?
+                std::vector<std::string>{member.ipv4} : member.ipv6;
+            for (const auto &text : addresses) {
+                sockaddr_storage allowed{};
+                if (!Endpoint(allowed, text, source.ss_family == AF_INET6, 0, link.ifindex)) {
+                    continue;
+                }
+                if (source.ss_family == AF_INET) {
+                    if (reinterpret_cast<const sockaddr_in &>(allowed).sin_addr.s_addr ==
+                        reinterpret_cast<const sockaddr_in &>(source).sin_addr.s_addr) {
+                        return member.generation;
+                    }
+                } else if (memcmp(&reinterpret_cast<const sockaddr_in6 &>(allowed).sin6_addr,
+                                  &reinterpret_cast<const sockaddr_in6 &>(source).sin6_addr, sizeof(in6_addr)) == 0 &&
+                           reinterpret_cast<const sockaddr_in6 &>(source).sin6_scope_id == link.ifindex) {
+                    return member.generation;
+                }
+            }
+        }
+        return 0;
+    }
+
+    void SendStatus(Socket &entry, Subscriber &subscriber, Clock::time_point now)
+    {
+        const auto frame = Encode(STATUS, state.available, subscriber.token, sequence, link.localIpv4);
+        if (sendto(entry.fd, frame.data(), frame.size(), MSG_DONTWAIT,
+                   reinterpret_cast<const sockaddr *>(&subscriber.peer), entry.size) ==
+            static_cast<ssize_t>(frame.size())) {
+            subscriber.sent = now;
+        }
+    }
+
     void HandleGateway(Socket &entry, const sockaddr_storage &source, uint8_t kind, const Token &nonce,
                        uint64_t revision, Clock::time_point now)
     {
+        uint64_t generation = MemberGeneration(source);
+        if (!generation) {
+            return;
+        }
+        auto found = std::find_if(entry.subscribers.begin(), entry.subscribers.end(), [&](const auto &subscriber) {
+            return subscriber.generation == generation && SameEndpoint(source, subscriber.peer) &&
+                   nonce == subscriber.token;
+        });
         if (kind == QUERY) {
-            bool changed = !SameEndpoint(source, entry.peer) || nonce != entry.token;
-            entry.peer = source;
-            entry.token = nonce;
-            entry.seen = now;
-            if (changed) {
-                entry.acknowledged = 0;
+            if (found == entry.subscribers.end()) {
+                auto candidates = std::count_if(entry.subscribers.begin(), entry.subscribers.end(),
+                    [generation](const auto &subscriber) { return subscriber.generation == generation; });
+                if (entry.subscribers.size() >= 64 || candidates >= 2) {
+                    return;
+                }
+                entry.subscribers.push_back({});
+                found = entry.subscribers.end() - 1;
+                found->generation = generation;
+                found->peer = source;
+                found->token = nonce;
+                // Each candidate receives a fresh server sequence. Its ACK commits
+                // the endpoint for this member generation.
+                ++sequence;
             }
-            if (changed || now - entry.sent >= RETRY) {
-                Send(entry, STATUS, now);
+            found->seen = now;
+            if (found->sent == Clock::time_point{} || now - found->sent >= RETRY) {
+                SendStatus(entry, *found, now);
             }
-        } else if (kind == ACK && SameEndpoint(source, entry.peer) && nonce == entry.token && revision == sequence) {
-            entry.acknowledged = revision;
-            entry.seen = now;
+        } else if (kind == ACK && found != entry.subscribers.end() && SameEndpoint(source, found->peer) &&
+                   nonce == found->token && revision == sequence) {
+            found->acknowledged = revision;
+            found->seen = now;
+            entry.subscribers.erase(std::remove_if(entry.subscribers.begin(), entry.subscribers.end(),
+                [&](const auto &subscriber) {
+                    return subscriber.generation == generation &&
+                           (subscriber.token != nonce || !SameEndpoint(source, subscriber.peer));
+                }), entry.subscribers.end());
         }
     }
 
     void HandleTerminal(Socket &entry, const sockaddr_storage &source, uint8_t kind, uint8_t mask, const Token &nonce,
-                        uint64_t revision, Clock::time_point now)
+                        uint64_t revision, Clock::time_point now, const Frame &frame)
     {
         if (kind == STATUS && SameEndpoint(source, entry.peer) && nonce == token && revision >= receivedSequence &&
             (revision != receivedSequence || mask == state.available)) {
@@ -217,6 +289,11 @@ struct NearlinkUpstreamSignal::Impl {
             state.changed |= state.known ? state.available ^ mask : 0;
             state.known = true;
             state.available = mask;
+            in_addr gateway{};
+            if (!link.localIpv4.empty() && inet_pton(AF_INET, link.gatewayIpv4.c_str(), &gateway) == 1) {
+                state.reconfigureIpv4 = memcmp(&gateway, frame.data() + 32, sizeof(gateway)) != 0 &&
+                                        std::any_of(frame.begin() + 32, frame.end(), [](uint8_t b) { return b != 0; });
+            }
             lastReply = now;
             Send(entry, ACK, now);
         }
@@ -245,7 +322,7 @@ struct NearlinkUpstreamSignal::Impl {
             if (gateway) {
                 HandleGateway(entry, source, kind, nonce, revision, now);
             } else {
-                HandleTerminal(entry, source, kind, mask, nonce, revision, now);
+                HandleTerminal(entry, source, kind, mask, nonce, revision, now, frame);
             }
         }
     }
@@ -283,6 +360,9 @@ bool NearlinkUpstreamSignal::Prepare(const Link &link, bool gateway)
             return false;
         }
     }
+    impl_->link.members = link.members;
+    impl_->configurationChanged = impl_->configurationChanged || (gateway && impl_->link.localIpv4 != link.localIpv4);
+    impl_->link.localIpv4 = link.localIpv4;
     auto now = Clock::now();
     impl_->Open(impl_->sockets[0], false, now);
     impl_->Open(impl_->sockets[1], true, now);
@@ -301,20 +381,23 @@ void NearlinkUpstreamSignal::Gateway(const Link &link, uint8_t available)
         return;
     }
     auto now = Clock::now();
-    if (impl_->state.available != available) {
+    bool changed = impl_->configurationChanged || impl_->state.available != (available & 3);
+    impl_->configurationChanged = false;
+    if (changed) {
         impl_->state.available = available & 3;
         ++impl_->sequence;
-        for (auto &entry : impl_->sockets) {
-            impl_->Send(entry, STATUS, now);
-        }
+        NETMGR_EXT_LOG_I("[NearlinkIpShare][SharedSignal] members=%{public}zu mask=%{public}u sequence=%{public}llu",
+                         link.members.size(), impl_->state.available, static_cast<unsigned long long>(impl_->sequence));
     }
     for (auto &entry : impl_->sockets) {
+        entry.subscribers.erase(std::remove_if(entry.subscribers.begin(), entry.subscribers.end(), [&](const auto &s) {
+            return now - s.seen > EXPIRY || impl_->MemberGeneration(s.peer) != s.generation;
+        }), entry.subscribers.end());
         impl_->Receive(entry, now);
-        if (entry.peer.ss_family != 0 && now - entry.seen > EXPIRY) {
-            entry.peer = {};
-        }
-        if (entry.acknowledged != impl_->sequence && now - entry.sent >= RETRY) {
-            impl_->Send(entry, STATUS, now);
+        for (auto &subscriber : entry.subscribers) {
+            if (changed || (subscriber.acknowledged != impl_->sequence && now - subscriber.sent >= RETRY)) {
+                impl_->SendStatus(entry, subscriber, now);
+            }
         }
     }
 }
@@ -326,6 +409,7 @@ NearlinkUpstreamSignal::State NearlinkUpstreamSignal::Terminal(const Link &link)
     }
     auto now = Clock::now();
     impl_->state.changed = 0;
+    impl_->state.reconfigureIpv4 = false;
     if (impl_->state.known && now - impl_->lastReply > EXPIRY) {
         Reset(); // A new challenge rejects delayed frames and permits legacy-probe fallback.
         return {};

@@ -290,14 +290,15 @@ int main(){
   for(unsigned slot=0;slot<capacity;++slot) {
    NearlinkPeerAddresses address;
    assert(NearlinkPeerAddresses::Allocate("172.24.0.0/16","fd77:6e6c:6970::/48",capacity,slot,address,true));
-   assert(subnets.insert(address.subnet).second && prefixes.insert(address.prefix).second);
+   subnets.insert(address.subnet); prefixes.insert(address.prefix);
+   assert(subnets.size()==1 && prefixes.size()==1 && address.end=="172.24.0.254");
    assert(address.Conflicts(address.gateway,24) && !address.Conflicts("192.168.62.1",24));
   }
  }
  NearlinkPeerAddresses address;
  assert(!NearlinkPeerAddresses::Allocate("172.24.0.1/16","fd77::/48",2,0,address,true));
- assert(!NearlinkPeerAddresses::Allocate("172.24.0.0/24","fd77::/64",2,0,address,true));
- assert(!NearlinkPeerAddresses::Allocate("172.24.0.0/16","fd77::/64",2,0,address,true));
+ assert(NearlinkPeerAddresses::Allocate("172.24.0.0/24","fd77::/64",32,31,address,true));
+ assert(NearlinkPeerAddresses::Allocate("172.24.0.0/16","fd77::/64",32,31,address,true));
  assert(!NearlinkPeerAddresses::Allocate("8.0.0.0/8","fd77::/48",2,0,address,true));
  NearlinkIpv6Runtime a,b;
  a.iface_="sleip0";a.ifindex_=7;a.layer2_="02:11:22:33:44:55";a.configuredPrefix_="fd77:6e6c:6970::";

@@ -63,7 +63,7 @@ int main(){
  status.requestedMode=3;
  status.supportedMaxTerminals=7;status.maxTerminals=7;
  for(uint32_t i=0;i<7;++i){NearlinkIpSharePeerStatus peer;peer.slot=i;peer.generation=9007199254740993ULL+i;
-  peer.ifaceName="sleip"+std::to_string(i);peer.peerId="slot:"+std::to_string(i);peer.state=i==0?2:4;
+  peer.ifaceName="sleip0";peer.peerId="slot:"+std::to_string(i);peer.state=i==0?2:4;
   status.peers.push_back(peer);}
  status.occupiedTerminals=7;status.activeTerminals=1;Parcel multi;assert(status.Marshalling(multi));
  assert(round.ReadFromParcel(multi)&&round.peers.size()==7&&round.peers[6].generation==9007199254740999ULL);

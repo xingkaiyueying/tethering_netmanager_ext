@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <net/if.h>
+#include <ifaddrs.h>
 #include <set>
 
 // Include libc interface definitions before Netsys pulls in <linux/if.h>.
@@ -36,8 +37,70 @@ constexpr int32_t PEER_PREFIX_LENGTH = 24;
 constexpr int32_t PEER_DHCP_IPV4 = 0;
 constexpr const char *PEER_DIRECT_NEXT_HOP = "0.0.0.0";
 constexpr const char *PEER_SUBNET_MASK = "255.255.255.0";
+
+bool SelectSharedSubnet(const NetworkShareConfiguration &configuration, unsigned capacity,
+                        const NetLinkInfo *upstream, NearlinkPeerAddresses &selected, bool dual,
+                        const std::vector<NearlinkPeerAddresses> &retired = {})
+{
+    uint8_t pool[4]{};
+    unsigned bits = 0;
+    if (!NearlinkPeerAddresses::ParsePool(configuration.GetNearlinkIpv4Pool(), AF_INET, pool, bits) ||
+        bits < 8 || bits > 24) {
+        return false;
+    }
+    std::vector<std::pair<std::string, unsigned>> occupied;
+    ifaddrs *interfaces = nullptr;
+    if (getifaddrs(&interfaces) != 0) {
+        return false;
+    }
+    for (auto *entry = interfaces; entry; entry = entry->ifa_next) {
+        if (!entry->ifa_addr || entry->ifa_addr->sa_family != AF_INET || !entry->ifa_netmask ||
+            strcmp(entry->ifa_name, "sleip0") == 0) {
+            continue;
+        }
+        const auto &address = reinterpret_cast<const sockaddr_in *>(entry->ifa_addr)->sin_addr;
+        uint32_t mask = ntohl(reinterpret_cast<const sockaddr_in *>(entry->ifa_netmask)->sin_addr.s_addr);
+        unsigned prefix = 0;
+        while (mask & 0x80000000u) {
+            ++prefix;
+            mask <<= 1;
+        }
+        char text[INET_ADDRSTRLEN]{};
+        if (inet_ntop(AF_INET, &address, text, sizeof(text))) {
+            occupied.emplace_back(text, prefix);
+        }
+    }
+    freeifaddrs(interfaces);
+    if (upstream) {
+        for (const auto &address : upstream->netAddrList_) {
+            if (address.family_ == AF_INET) {
+                occupied.emplace_back(address.address_, address.prefixlen_);
+            }
+        }
+    }
+    uint32_t base = (uint32_t(pool[0]) << 24) | (uint32_t(pool[1]) << 16) | (uint32_t(pool[2]) << 8);
+    for (unsigned subnet = 0; subnet < (1u << (24 - bits)); ++subnet) {
+        uint32_t address = htonl(base + subnet * 256);
+        char text[INET_ADDRSTRLEN]{};
+        if (!inet_ntop(AF_INET, &address, text, sizeof(text)) ||
+            !NearlinkPeerAddresses::Allocate(std::string(text) + "/24", configuration.GetNearlinkIpv6Pool(),
+                                             capacity, 0, selected, dual)) {
+            return false;
+        }
+        bool available = std::none_of(occupied.begin(), occupied.end(), [&](const auto &other) {
+            return selected.Conflicts(other.first, other.second);
+        }) && std::none_of(retired.begin(), retired.end(), [&](const auto &old) {
+            return selected.subnet == old.subnet;
+        });
+        if (available) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
-bool NearlinkIpShareController::CleanupGatewayPeer(PeerAddressContext &peer)
+bool NearlinkIpShareController::CleanupGatewayPeer(SharedNetworkContext &peer)
 {
     if (peer.upstreamSignal) {
         peer.upstreamSignal->Reset();
@@ -83,7 +146,19 @@ bool NearlinkIpShareController::CleanupGatewayPeer(PeerAddressContext &peer)
             ok = false;
         }
     }
-    if (!peer.routeAdded && peer.interfaceAdded) {
+    for (auto it = peer.retiredIpv4.begin(); it != peer.retiredIpv4.end();) {
+        int32_t route = netsys.NetworkRemoveRoute(PEER_IP_SHARE_LOCAL_NET_ID, peer.iface.c_str(),
+                                                 it->subnet.c_str(), PEER_DIRECT_NEXT_HOP);
+        int32_t address = sameInterface ? netsys.DelInterfaceAddress(peer.iface.c_str(), it->gateway,
+                                                                    PEER_PREFIX_LENGTH) : -ENODEV;
+        if (missing(route) && missing(address)) {
+            it = peer.retiredIpv4.erase(it);
+        } else {
+            ok = false;
+            ++it;
+        }
+    }
+    if (!peer.routeAdded && peer.retiredIpv4.empty() && peer.interfaceAdded) {
         int32_t ret = netsys.NetworkRemoveInterface(PEER_IP_SHARE_LOCAL_NET_ID, peer.iface.c_str());
         if (released("local interface", ret, missing(ret))) {
             peer.interfaceAdded = false;
@@ -104,7 +179,7 @@ bool NearlinkIpShareController::CleanupGatewayPeer(PeerAddressContext &peer)
     return ok;
 }
 
-int32_t NearlinkIpShareController::ConfigureGatewayPeerIpv4(PeerAddressContext &peer, const NetLinkInfo *upstream)
+int32_t NearlinkIpShareController::ConfigureGatewayPeerIpv4(SharedNetworkContext &peer, const NetLinkInfo *upstream)
 {
     if (peer.dhcpStarted && peer.ipv4Error != 0) {
         int32_t ret = StopDhcpServer(peer.iface.c_str());
@@ -116,15 +191,30 @@ int32_t NearlinkIpShareController::ConfigureGatewayPeerIpv4(PeerAddressContext &
     if (upstream) {
         for (const auto &address : upstream->netAddrList_) {
             if (address.family_ == AF_INET && peer.addresses.Conflicts(address.address_, address.prefixlen_)) {
-                // Revoke only this family's DHCP/address resources on a changed upstream conflict.
-                if (peer.dhcpStarted && StopDhcpServer(peer.iface.c_str()) == DHCP_SUCCESS) {
-                    peer.dhcpStarted = false;
+                NearlinkPeerAddresses replacement;
+                if (peer.retiredIpv4.size() >= 4 ||
+                    !SelectSharedSubnet(configuration_, maxTerminals_, upstream, replacement, peer.mode == 3,
+                                        peer.retiredIpv4)) {
+                    return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
                 }
-                if (peer.addressAdded && NetsysController::GetInstance().DelInterfaceAddress(
-                                             peer.iface.c_str(), peer.addresses.gateway, PEER_PREFIX_LENGTH) == 0) {
-                    peer.addressAdded = false;
+                if (peer.dhcpStarted && StopDhcpServer(peer.iface.c_str()) != DHCP_SUCCESS) {
+                    return NETMANAGER_EXT_ERR_OPERATION_FAILED;
                 }
-                return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
+                peer.dhcpStarted = false;
+                // Install the new primary before retaining the previous subnet for bounded
+                // control delivery. The old route/address drain when their members renew.
+                auto &netsys = NetsysController::GetInstance();
+                if (peer.addressAdded && netsys.DelInterfaceAddress(peer.iface.c_str(), peer.addresses.gateway,
+                                                                    PEER_PREFIX_LENGTH) != 0) {
+                    return NETMANAGER_EXT_ERR_OPERATION_FAILED;
+                }
+                peer.retiredIpv4.push_back(peer.addresses);
+                peer.addresses = replacement;
+                peer.addressAdded = peer.routeAdded = false;
+                NETMGR_EXT_LOG_I("[NearlinkIpShare][SharedNetwork] IPv4 subnet changed generation=%{public}llu "
+                                 "retired=%{public}zu", static_cast<unsigned long long>(peer.generation),
+                                 peer.retiredIpv4.size());
+                break;
             }
         }
     }
@@ -143,6 +233,12 @@ int32_t NearlinkIpShareController::ConfigureGatewayPeerIpv4(PeerAddressContext &
             return ret;
         }
         peer.addressAdded = true;
+    }
+    for (const auto &old : peer.retiredIpv4) {
+        int32_t retained = netsys.AddInterfaceAddress(peer.iface.c_str(), old.gateway, PEER_PREFIX_LENGTH);
+        if (retained != 0 && retained != -EEXIST) {
+            return retained;
+        }
     }
     if (!peer.routeAdded) {
         ret = netsys.NetworkAddRoute(PEER_IP_SHARE_LOCAL_NET_ID, peer.iface.c_str(), peer.addresses.subnet.c_str(),
@@ -179,7 +275,7 @@ int32_t NearlinkIpShareController::ConfigureGatewayPeerIpv4(PeerAddressContext &
     return 0;
 }
 
-void NearlinkIpShareController::ConfigureGatewayPeerAddress(PeerAddressContext &peer, const NetLinkInfo *upstream)
+void NearlinkIpShareController::ConfigureGatewayPeerAddress(SharedNetworkContext &peer, const NetLinkInfo *upstream)
 {
     const auto previousIpv4 = peer.ipv4Error;
     const auto previousIpv6 = peer.ipv6Error;
@@ -213,7 +309,7 @@ void NearlinkIpShareController::ConfigureGatewayPeerAddress(PeerAddressContext &
     }
 }
 
-void NearlinkIpShareController::ProjectGatewayPeerLocked(const PeerAddressContext &peer)
+void NearlinkIpShareController::ProjectGatewayPeerLocked(const SharedNetworkContext &peer)
 {
     status_.ipv4Address = peer.ipv4Error == 0 ? peer.addresses.gateway : "";
     status_.ipv4.configurationAvailable = peer.ipv4Error == 0;
@@ -232,109 +328,144 @@ void NearlinkIpShareController::ProjectGatewayPeerLocked(const PeerAddressContex
 
 void NearlinkIpShareController::ConfigureGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link)
 {
+    {
+        std::lock_guard lock(mutex_);
+        if (stopRequested_ || shuttingDown_ || status_.role != NearlinkIpShareRole::GATEWAY) {
+            return;
+        }
+    }
     if (link.generation != linkGeneration_ || link.sequence < linkSequence_ ||
         link.peerLinks.size() > static_cast<size_t>(maxTerminals_)) {
         return;
     }
     std::set<uint32_t> live;
     for (const auto &entry : link.peerLinks) {
-        if (entry.slot >= static_cast<uint32_t>(maxTerminals_) || !entry.generation ||
-            entry.ifaceName != "sleip" + std::to_string(entry.slot) ||
+        if (entry.slot >= static_cast<uint32_t>(maxTerminals_) || !entry.generation || entry.ifaceName != "sleip0" ||
             (entry.selectedMode != 1 && entry.selectedMode != 3) ||
             (entry.selectedMode & status_.requestedMode) != entry.selectedMode || !live.insert(entry.slot).second) {
             return;
         }
     }
-    {
-        std::lock_guard lock(mutex_);
-        gatewayPeerLinks_.clear();
-        for (const auto &entry : link.peerLinks) {
-            NearlinkIpSharePeerStatus peer;
-            peer.slot = entry.slot;
-            peer.generation = entry.generation;
-            peer.ifaceName = entry.ifaceName;
-            peer.selectedMode = entry.selectedMode;
-            peer.state = entry.releasing ? 4 : (entry.active ? 1 : 0);
-            gatewayPeerLinks_.push_back(peer);
-        }
-    }
+    gatewayPeerLinks_.clear();
     for (auto it = addressPeers_.begin(); it != addressPeers_.end();) {
-        auto entry = std::find_if(link.peerLinks.begin(), link.peerLinks.end(), [&](const auto &e) {
-            return !e.releasing && e.slot == it->first && e.generation == it->second.generation;
+        auto entry = std::find_if(link.peerLinks.begin(), link.peerLinks.end(), [&](const auto &value) {
+            return !value.releasing && value.slot == it->first && value.generation == it->second.generation;
         });
         if (entry == link.peerLinks.end()) {
-            it->second.releasing = true;
-            if (CleanupGatewayPeer(it->second)) {
-                it = addressPeers_.erase(it);
-                continue;
-            }
+            NETMGR_EXT_LOG_I("[NearlinkIpShare][SharedNetwork] member removed slot=%{public}u epoch=%{public}llu",
+                             it->first, static_cast<unsigned long long>(it->second.generation));
+            it = addressPeers_.erase(it);
+        } else {
+            ++it;
         }
-        ++it;
     }
     for (const auto &entry : link.peerLinks) {
-        if (entry.releasing && addressPeers_.count(entry.slot) == 0) {
+        NearlinkIpSharePeerStatus projected;
+        projected.slot = entry.slot;
+        projected.generation = entry.generation;
+        projected.ifaceName = entry.ifaceName;
+        projected.selectedMode = entry.selectedMode;
+        projected.state = entry.releasing ? 4 : (entry.active ? 1 : 0);
+        gatewayPeerLinks_.push_back(projected);
+        if (entry.releasing) {
             OHOS::Nearlink::NearlinkIpShareClient::GetInstance().CompleteGatewayPeerRelease(entry.generation);
+            continue;
+        }
+        auto &member = addressPeers_[entry.slot];
+        member.generation = entry.generation;
+        member.slot = entry.slot;
+        member.iface = "sleip0";
+        member.mode = entry.selectedMode;
+        member.active = entry.active;
+        member.ipv4Address = entry.ipv4Address;
+        member.ipv4LeaseLifetime = entry.ipv4LeaseLifetime;
+        member.ipv6Addresses.clear();
+        for (const auto &evidence : entry.ipv6Addresses) {
+            NearlinkIpShareAddress address;
+            address.address = evidence.address;
+            address.prefixLength = 64;
+            address.origin = 2;
+            address.dadState = 2;
+            address.preferredLifetime = evidence.preferredLifetime;
+            address.validLifetime = evidence.validLifetime;
+            member.ipv6Addresses.push_back(address);
         }
     }
-    NetHandle network;
+    auto &network = gatewayNetwork_;
+    const unsigned index = if_nametoindex("sleip0");
+    if (!index) {
+        if (link.serviceReady) {
+            Fail("SHARED_IFACE", NETMANAGER_EXT_ERR_OPERATION_FAILED);
+        }
+        return;
+    }
+    if (network.generation && (network.generation != link.generation || network.ifindex != index)) {
+        // A replacement interface affects every member. Retain cleanup ownership on failure.
+        Fail("SHARED_IFINDEX", NETMANAGER_EXT_ERR_OPERATION_FAILED);
+        return;
+    }
+    if (!network.generation) {
+        network.generation = link.generation;
+        network.ifindex = index;
+        network.iface = "sleip0";
+        if (!SelectSharedSubnet(configuration_, maxTerminals_, nullptr, network.addresses,
+                                status_.requestedMode == 3)) {
+            Fail("SHARED_POOL", NETMANAGER_EXT_ERR_PARAMETER_ERROR);
+            return;
+        }
+        NETMGR_EXT_LOG_I("[NearlinkIpShare][SharedNetwork] created generation=%{public}llu ifindex=%{public}u "
+                         "capacity=%{public}d leases=253", static_cast<unsigned long long>(network.generation),
+                         index, maxTerminals_);
+    }
+    for (auto &[slot, member] : addressPeers_) {
+        member.ifindex = index;
+        for (auto &address : member.ipv6Addresses) {
+            address.scopeId = index;
+        }
+    }
+    bool dual = std::any_of(addressPeers_.begin(), addressPeers_.end(), [](const auto &item) {
+        return item.second.mode == 3 && !item.second.releasing;
+    });
+    if (!dual && network.ipv6Prepared && network.ipv6.Cleanup()) {
+        network.ipv6Prepared = network.ipv6Ready = network.ipv6Routed = false;
+    }
+    network.mode = dual || network.ipv6Prepared ? 3 : 1;
+    NetHandle handle;
     NetLinkInfo upstream;
-    bool hasUpstream = NetConnClient::GetInstance().GetDefaultNet(network) == 0 &&
-                       NetConnClient::GetInstance().GetConnectionProperties(network, upstream) == 0;
-    if (!dnsProxyStarted_ && !link.peerLinks.empty()) {
-        dnsProxyStarted_ = NetsysController::GetInstance().StartDnsProxyListen() == 0;
-    }
-    bool first = true;
-    for (const auto &entry : link.peerLinks) {
-        if (entry.releasing || !entry.active) {
+    bool present = NetConnClient::GetInstance().GetDefaultNet(handle) == 0 &&
+                   NetConnClient::GetInstance().GetConnectionProperties(handle, upstream) == 0;
+    ConfigureGatewayPeerAddress(network, present ? &upstream : nullptr);
+    // Keep retiring subnets only while a member still holds a matching lease.
+    auto &netsys = NetsysController::GetInstance();
+    for (auto it = network.retiredIpv4.begin(); it != network.retiredIpv4.end();) {
+        bool occupied = std::any_of(addressPeers_.begin(), addressPeers_.end(), [&](const auto &member) {
+            return !member.second.ipv4Address.empty() && it->Conflicts(member.second.ipv4Address, 32);
+        });
+        if (occupied) {
+            ++it;
             continue;
         }
-        unsigned index = if_nametoindex(entry.ifaceName.c_str());
-        if (!index) {
-            continue;
-        } // Release notification can follow TUN destruction.
-        auto found = addressPeers_.find(entry.slot);
-        if (found != addressPeers_.end() &&
-            (found->second.generation != entry.generation || found->second.ifindex != index)) {
-            if (!CleanupGatewayPeer(found->second)) {
-                continue;
-            }
-            addressPeers_.erase(found);
-        }
-        auto &peer = addressPeers_[entry.slot];
-        peer.releasing = false;
-        if (!peer.generation) {
-            peer.generation = entry.generation;
-            peer.slot = entry.slot;
-            peer.ifindex = index;
-            peer.mode = entry.selectedMode;
-            peer.iface = entry.ifaceName;
-            if (!NearlinkPeerAddresses::Allocate(configuration_.GetNearlinkIpv4Pool(),
-                                                 configuration_.GetNearlinkIpv6Pool(), maxTerminals_, entry.slot,
-                                                 peer.addresses, peer.mode == 3)) {
-                addressPeers_.erase(entry.slot);
-                continue;
-            }
-        }
-        ConfigureGatewayPeerAddress(peer, hasUpstream ? &upstream : nullptr);
-        if (first) {
-            std::lock_guard lock(mutex_);
-            ProjectGatewayPeerLocked(peer);
-            first = false;
+        int32_t route = netsys.NetworkRemoveRoute(PEER_IP_SHARE_LOCAL_NET_ID, "sleip0", it->subnet.c_str(),
+                                                 PEER_DIRECT_NEXT_HOP);
+        int32_t address = netsys.DelInterfaceAddress("sleip0", it->gateway, PEER_PREFIX_LENGTH);
+        auto removed = [](int32_t code) {
+            return code == 0 || code == -ESRCH || code == -ENODEV || code == -EADDRNOTAVAIL;
+        };
+        if (removed(route) && removed(address)) {
+            it = network.retiredIpv4.erase(it);
+        } else {
+            ++it;
         }
     }
+
     {
         std::lock_guard lock(mutex_);
+        ProjectGatewayPeerLocked(network);
         status_.serviceReady = link.serviceReady;
         status_.hasUpstream = false;
         status_.ipv4.externalAvailable = status_.ipv6.externalAvailable = false;
-        if (first) {
-            status_.ifaceName.clear();
-            status_.ipv4Address.clear();
-            status_.ipv4 = {};
-            status_.ipv6 = {};
-        }
     }
-    ConfigureGatewayPeerUpstreams(hasUpstream ? &upstream : nullptr, hasUpstream ? network.GetNetId() : -1);
+    ConfigureGatewayPeerUpstreams(present ? &upstream : nullptr, present ? handle.GetNetId() : -1);
     bool ready;
     {
         std::lock_guard lock(mutex_);
@@ -388,8 +519,9 @@ void NearlinkIpShareController::RefreshGatewayStatusLocked()
         peer.generation = local.generation;
         peer.ifaceName = local.iface;
         peer.selectedMode = local.mode;
-        peer.hasUpstream = !local.releasing && local.interfaceForwarding && local.natEnabled && forwardingEnabled_ &&
-                           dnsUpstreamReady_;
+        const auto &network = gatewayNetwork_;
+        peer.hasUpstream = !local.releasing && network.interfaceForwarding && network.natEnabled &&
+                           forwardingEnabled_ && dnsUpstreamReady_;
         if (local.releasing || status_.state == NearlinkIpShareState::STOPPING) {
             peer.state = 4;
             peer.hasUpstream = false;
@@ -397,34 +529,34 @@ void NearlinkIpShareController::RefreshGatewayStatusLocked()
             peer.ipv6 = {};
             continue;
         }
-        peer.ipv4.configurationAvailable = local.dhcpStarted && local.addressAdded && local.ipv4Error == 0;
-        peer.ipv4.phase = local.ipv4Error ? 3 : (peer.ipv4.configurationAvailable ? 2 : 1);
-        if (local.addressAdded) {
+        if (!local.active) {
+            peer.state = 0;
+            peer.hasUpstream = false;
+            continue;
+        }
+        peer.ipv4.configurationAvailable = !local.ipv4Address.empty() && network.dhcpStarted && network.ipv4Error == 0;
+        peer.ipv4.phase = network.ipv4Error ? 3 : (peer.ipv4.configurationAvailable ? 2 : 1);
+        if (!local.ipv4Address.empty()) {
             NearlinkIpShareAddress address;
-            address.address = local.addresses.gateway;
+            address.address = local.ipv4Address;
             address.prefixLength = 24;
+            address.origin = 1;
+            address.preferredLifetime = address.validLifetime = local.ipv4LeaseLifetime;
             peer.ipv4.addresses.push_back(address);
         }
-        peer.ipv4.hasError = local.ipv4Error != 0 || local.upstreamError != 0;
-        peer.ipv4.error = {4, 1, local.ipv4Error ? "DHCP" : "UPSTREAM",
-                           local.ipv4Error ? local.ipv4Error : local.upstreamError, true};
+        peer.ipv4.hasError = network.ipv4Error != 0 || network.upstreamError != 0;
+        peer.ipv4.error = {4, 1, network.ipv4Error ? "DHCP" : "UPSTREAM",
+                           network.ipv4Error ? network.ipv4Error : network.upstreamError, true};
         if (local.mode == 3) {
-            peer.ipv6.configurationAvailable = local.ipv6Ready;
-            peer.ipv6.phase = local.ipv6Ready ? 2 : (local.ipv6Error ? 3 : 1);
-            auto addressText = local.ipv6.Gateway();
-            if (!addressText.empty()) {
-                NearlinkIpShareAddress address;
-                address.address = addressText;
-                address.prefixLength = 64;
-                address.scopeId = local.ifindex;
-                peer.ipv6.addresses.push_back(address);
-            }
-            peer.ipv6.hasError = local.ipv6Error != 0 || local.upstreamError != 0;
-            peer.ipv6.error = {4, 2, local.ipv6Error ? "PREFIX" : "UPSTREAM",
-                               local.ipv6Error ? local.ipv6Error : local.upstreamError, true};
+            peer.ipv6.configurationAvailable = network.ipv6Ready && !local.ipv6Addresses.empty();
+            peer.ipv6.phase = peer.ipv6.configurationAvailable ? 2 : (network.ipv6Error ? 3 : 1);
+            peer.ipv6.addresses = local.ipv6Addresses;
+            peer.ipv6.hasError = network.ipv6Error != 0 || network.upstreamError != 0;
+            peer.ipv6.error = {4, 2, network.ipv6Error ? "PREFIX" : "UPSTREAM",
+                               network.ipv6Error ? network.ipv6Error : network.upstreamError, true};
         }
         bool configured = peer.ipv4.configurationAvailable && (local.mode != 3 || peer.ipv6.configurationAvailable);
-        bool routed = peer.hasUpstream && (local.mode != 3 || local.ipv6Routed);
+        bool routed = peer.hasUpstream && (local.mode != 3 || network.ipv6Routed);
         bool anyConfigured = peer.ipv4.configurationAvailable || peer.ipv6.configurationAvailable;
         peer.state =
             configured ? (routed ? 2 : 3) : (peer.ipv4.hasError || peer.ipv6.hasError ? (anyConfigured ? 3 : 5) : 1);

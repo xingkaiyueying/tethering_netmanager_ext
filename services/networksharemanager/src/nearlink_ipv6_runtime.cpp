@@ -299,13 +299,20 @@ bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2, const
     close(fd);
     if (!ok || !Set("disable_ipv6", "0") || !Set("forwarding", gateway ? "1" : "0") ||
         !Set("accept_ra", gateway ? "0" : "2") || !Set("autoconf", gateway ? "0" : "1") || !Set("use_tempaddr", "0") ||
-        !Set("accept_dad", "1") || !Set("dad_transmits", "1")) {
+        !Set("accept_dad", "1") || !Set("dad_transmits", "1") || !Set("accept_redirects", "0")) {
         return false;
     }
     if (!gateway && (!SetToken() || !Set("router_solicitations", "6") || !Set("router_solicitation_interval", "1"))) {
         return false;
     }
-    prepared_ = AddAddress(gateway ? "fe80::1" : "fe80::2");
+    token.s6_addr[0] = 0xfe;
+    token.s6_addr[1] = 0x80;
+    char text[INET6_ADDRSTRLEN]{};
+    if (!inet_ntop(AF_INET6, &token, text, sizeof(text))) {
+        return false;
+    }
+    linkLocal_ = gateway ? "fe80::1" : text;
+    prepared_ = AddAddress(linkLocal_);
     return prepared_;
 }
 bool NearlinkIpv6Runtime::HasDefaultRouteOnInterface(const std::string &iface, int32_t family)

@@ -65,6 +65,10 @@ public:
     {
         return OwnsPrefix(prefix) || retired_.size() + (HasPrefix() ? 1 : 0) < 4;
     }
+    const std::string &LinkLocal() const
+    {
+        return linkLocal_;
+    }
     const std::string &Gateway() const
     {
         return gateway_;
@@ -94,7 +98,7 @@ private:
     // Diagnostic state only; readiness continues to use the kernel flags below.
     std::map<std::string, std::string> settings_;
     std::vector<std::string> addresses_;
-    std::string layer2_, prefix_, gateway_, dns_, advertisedPrefix_;
+    std::string layer2_, prefix_, gateway_, dns_, advertisedPrefix_, linkLocal_;
     std::shared_ptr<RouterAdvertisementDaemon> daemon_;
 };
 } // namespace OHOS::NetManagerStandard

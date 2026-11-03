@@ -74,12 +74,13 @@ private:
     void HandleNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
     void ReconcileGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
     void ConfigureGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
-    struct PeerAddressContext {
+    struct SharedNetworkContext {
         uint64_t generation{0};
         uint32_t slot{0}, ifindex{0};
         int32_t mode{0};
         std::string iface;
         NearlinkPeerAddresses addresses;
+        std::vector<NearlinkPeerAddresses> retiredIpv4;
         bool interfaceAdded{false}, addressAdded{false}, routeAdded{false}, dhcpStarted{false};
         bool ipv6Prepared{false}, ipv6Ready{false};
         bool forwardAttempted{false}, interfaceForwarding{false}, natEnabled{false}, natAttempted{false},
@@ -93,16 +94,27 @@ private:
         NearlinkIpv6Runtime ipv6;
         std::unique_ptr<NearlinkUpstreamSignal> upstreamSignal;
     };
-    bool CleanupGatewayPeer(PeerAddressContext &peer);
-    int32_t CleanupGatewayPeerUpstream(PeerAddressContext &peer);
+    bool CleanupGatewayPeer(SharedNetworkContext &peer);
+    int32_t CleanupGatewayPeerUpstream(SharedNetworkContext &peer);
     void ConfigureGatewayPeerUpstreams(const NetLinkInfo *upstream, int32_t netId);
-    bool PrepareGatewayPeerIpv6(PeerAddressContext &peer, const NetLinkInfo *upstream, bool present);
-    int32_t ConfigureGatewayPeerIpv4(PeerAddressContext &peer, const NetLinkInfo *upstream);
-    std::map<uint32_t, PeerAddressContext> addressPeers_;
+    bool PrepareGatewayPeerIpv6(SharedNetworkContext &peer, const NetLinkInfo *upstream, bool present);
+    int32_t ConfigureGatewayPeerIpv4(SharedNetworkContext &peer, const NetLinkInfo *upstream);
+    struct MemberAddressContext {
+        uint64_t generation{0};
+        uint32_t slot{0}, ifindex{0};
+        int32_t mode{0};
+        std::string iface, ipv4Address;
+        uint32_t ipv4LeaseLifetime{0};
+        std::vector<NearlinkIpShareAddress> ipv6Addresses;
+        bool releasing{false};
+        bool active{false};
+    };
+    SharedNetworkContext gatewayNetwork_;
+    std::map<uint32_t, MemberAddressContext> addressPeers_;
     std::vector<NearlinkIpSharePeerStatus> gatewayPeerLinks_;
-    void ConfigureGatewayPeerAddress(PeerAddressContext &peer, const NetLinkInfo *upstream);
-    void ProjectGatewayPeerLocked(const PeerAddressContext &peer);
-    bool ConfigureGatewayPeerUpstream(PeerAddressContext &peer, const NetLinkInfo *upstream, bool present, bool hasV4);
+    void ConfigureGatewayPeerAddress(SharedNetworkContext &peer, const NetLinkInfo *upstream);
+    void ProjectGatewayPeerLocked(const SharedNetworkContext &peer);
+    bool ConfigureGatewayPeerUpstream(SharedNetworkContext &peer, const NetLinkInfo *upstream, bool present, bool hasV4);
     void RefreshGatewayStatusLocked();
     void StartTerminalDhcp();
     void ConfigureUpstream();
@@ -117,7 +129,7 @@ private:
     void RefreshFamilyStatus();
     void ValidateFamilies();
     void RequestFamilyValidation();
-    void NotifyGatewayUpstream(PeerAddressContext &peer, bool ipv4);
+    void NotifyGatewayUpstream(SharedNetworkContext &peer, bool ipv4);
     bool PollTerminalUpstream();
     bool RemoteFamilyBlocked(bool ipv6) const;
     void ApplyRemoteFamilyStatus(NearlinkIpShareFamilyStatus &family, bool ipv6);

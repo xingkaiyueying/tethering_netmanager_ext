@@ -108,7 +108,7 @@ struct NearlinkIpSharePeerStatus {
     bool Valid() const
     {
         return slot < 32 && generation && peerId.size() <= 64 && contextId.size() <= 128 &&
-               ifaceName == "sleip" + std::to_string(slot) && state >= 0 && state <= 5 &&
+               ifaceName == "sleip0" && state >= 0 && state <= 5 &&
                (selectedMode == 1 || selectedMode == 3) && ipv4.Valid(false) && ipv6.Valid(true);
     }
     bool Write(Parcel &p) const

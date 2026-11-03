@@ -44,8 +44,8 @@ public:
     std::string pool4="172.24.0.0/16", pool6="fd77:6e6c:6970::/48", routedPool, routedUpstream;
     const std::string &GetNearlinkIpv6RoutedPool()const{return routedPool;}
     const std::string &GetNearlinkIpv6RoutedUpstream()const{return routedUpstream;}
-    const std::string &GetNearlinkIpv4Pool() { return pool4; }
-    const std::string &GetNearlinkIpv6Pool() { return pool6; }
+    const std::string &GetNearlinkIpv4Pool() const { return pool4; }
+    const std::string &GetNearlinkIpv6Pool() const { return pool6; }
 };
 struct INetAddr {
     enum { IPV4=1, IPV6=2 };
@@ -166,7 +166,8 @@ public:
 namespace OHOS::Nearlink {
 using NearlinkIpShareRole = OHOS::NetManagerStandard::NearlinkIpShareRole;
 using NearlinkIpShareState = OHOS::NetManagerStandard::NearlinkIpShareState;
-struct NearlinkIpSharePeerLink {uint32_t slot=0;uint64_t generation=0;int32_t selectedMode=0;std::string ifaceName;bool releasing=false;bool active=true;};
+struct NearlinkIpSharePeerAddress{std::string address;uint32_t preferredLifetime=90,validLifetime=120;};
+struct NearlinkIpSharePeerLink {uint32_t slot=0;uint64_t generation=0;int32_t selectedMode=0;std::string ifaceName;bool releasing=false;bool active=true;std::string ipv4Address;uint32_t ipv4LeaseLifetime=120;std::vector<NearlinkIpSharePeerAddress> ipv6Addresses;};
 class NearlinkIpShareStatus { public:
     NearlinkIpShareRole role{NearlinkIpShareRole::NONE};
     NearlinkIpShareState state{NearlinkIpShareState::IDLE};

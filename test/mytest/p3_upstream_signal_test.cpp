@@ -36,10 +36,11 @@ struct TestSocket {
 static std::map<int,TestSocket> descriptors;
 static std::array<unsigned,4> indices{10,20,11,21};
 static int node=0,nextFd=100,closed=0,randomCalls=0,sendCalls=0,receiveCalls=0;
+static bool sharedNetwork=false;
 static bool dropStatus=false,dropAck=false,randomFailure=false,bindFailure=false,sendFailure=false;
 static bool markFailure=false;
 static std::map<int,bool> socketFailure;
-static Datagram lastStatus;
+static Datagram lastStatus,lastQuery,lastAck;
 static std::vector<std::string> logCalls;
 unsigned fake_index(const char*){return indices[node];}
 ssize_t fake_random(void *data,size_t size,unsigned flags){
@@ -79,7 +80,7 @@ int fake_bind(int fd,const sockaddr *address,int size){
 bool same_target(const sockaddr_storage &local,const sockaddr *target){
     if(local.ss_family!=target->sa_family)return false;
     if(local.ss_family==AF_INET){auto &a=(const sockaddr_in&)local;auto &b=*(const sockaddr_in*)target;
-        return a.sin_port==b.sin_port && a.sin_addr.s_addr==b.sin_addr.s_addr;}
+        return a.sin_port==b.sin_port && (a.sin_addr.s_addr==0 || a.sin_addr.s_addr==b.sin_addr.s_addr);}
     auto &a=(const sockaddr_in6&)local;auto &b=*(const sockaddr_in6*)target;
     return a.sin6_port==b.sin6_port && memcmp(&a.sin6_addr,&b.sin6_addr,16)==0;
 }
@@ -87,11 +88,15 @@ ssize_t fake_send(int fd,const void *data,size_t size,int flags,const sockaddr *
     ++sendCalls;assert(flags&MSG_DONTWAIT);auto &from=descriptors.at(fd);
     if(sendFailure){errno=EAGAIN;return -1;}
     Datagram packet;packet.data.assign((const uint8_t*)data,(const uint8_t*)data+size);packet.source=from.local;
+    if(from.family==AF_INET && ((sockaddr_in&)packet.source).sin_addr.s_addr==0)
+        inet_pton(AF_INET,from.node==2?"172.24.1.1":"172.24.0.1",&((sockaddr_in&)packet.source).sin_addr);
     if(packet.data[4]==2&&from.family==AF_INET)lastStatus=packet;
+    if(from.node==1&&from.family==AF_INET&&packet.data[4]==1)lastQuery=packet;
+    if(from.node==1&&from.family==AF_INET&&packet.data[4]==3)lastAck=packet;
     if((dropStatus&&packet.data[4]==2)||(dropAck&&packet.data[4]==3))return size;
     for(auto &[other,to]:descriptors){
         (void)other;
-        if(to.node!=(from.node^1) || !same_target(to.local,address))continue;
+        if((sharedNetwork ? (from.node==0 ? to.node==0 : to.node!=0) : to.node!=(from.node^1)) || !same_target(to.local,address))continue;
         auto copy=packet;
         if(to.family==AF_INET6)((sockaddr_in6&)copy.source).sin6_scope_id=indices[to.node];
         to.incoming.push_back(copy);
@@ -116,10 +121,11 @@ ssize_t fake_receive(int fd,void *data,size_t size,int flags,sockaddr *address,i
 #define getrandom fake_random
 #define if_nametoindex fake_index
 #define NETMGR_EXT_LOG_W(format,...) logCalls.emplace_back(format)
+#define NETMGR_EXT_LOG_I(format,...) logCalls.emplace_back(format)
 #include "nearlink_upstream_signal.cpp"
 using Signal=OHOS::NetManagerStandard::NearlinkUpstreamSignal;
-static Signal::Link gatewayLink{"sleip0","172.24.0.1","",10,99,true};
-static Signal::Link terminalLink{"sleip0","172.24.0.3","172.24.0.1",20,108,true};
+static Signal::Link gatewayLink{"sleip0","172.24.0.1","",10,99,true,{},{},{}};
+static Signal::Link terminalLink{"sleip0","172.24.0.3","172.24.0.1",20,108,true,{},{},{}};
 static void Gateway(Signal &g,uint8_t mask){node=0;g.Gateway(gatewayLink,mask);}
 static Signal::State Terminal(Signal &t){node=1;return t.Terminal(terminalLink);}
 static void Inject(const Datagram &packet){
@@ -138,6 +144,8 @@ static Datagram Future(Datagram packet){
     return packet;
 }
 int main(){
+    gatewayLink.localIpv6="fe80::1"; terminalLink.localIpv6="fe80::2";terminalLink.gatewayIpv6="fe80::1";
+    gatewayLink.members={{101,"172.24.0.3",{"fe80::2"}}};
     Signal gateway,terminal;
     Gateway(gateway,3);assert(!Terminal(terminal).known);Gateway(gateway,3);
     auto state=Terminal(terminal);assert(state.known&&state.available==3);Gateway(gateway,3);
@@ -173,6 +181,7 @@ int main(){
     // A second peer has its own socket, token, sequence and address context.
     Signal gateway2,terminal2;
     auto gl2=gatewayLink;gl2.iface="sleip1";gl2.localIpv4="172.24.1.1";gl2.ifindex=11;
+    gl2.members={{102,"172.24.1.3",{"fe80::2"}}};
     auto tl2=terminalLink;tl2.localIpv4="172.24.1.3";tl2.gatewayIpv4="172.24.1.1";tl2.ifindex=21;
     node=2;gateway2.Gateway(gl2,2);node=3;terminal2.Terminal(tl2);node=2;gateway2.Gateway(gl2,2);
     node=3;assert(terminal2.Terminal(tl2).available==2);
@@ -197,6 +206,32 @@ int main(){
     for(int i=0;i<100;++i){Inject(old);}
     terminal.Terminal(tl);assert(receiveCalls-before<=8);
     gateway.Reset();terminal.Reset();assert(descriptors.empty()&&closed>0);
+
+    // One gateway owns one socket per family and independently tracks two members.
+    sharedNetwork=true;Signal shared,first,second;auto sg=gatewayLink;
+    sg.members={{501,"172.24.0.3",{"fe80::2"}},{502,"172.24.0.4",{"fe80::3"}}};
+    auto firstLink=terminalLink;auto secondLink=terminalLink;secondLink.localIpv4="172.24.0.4";
+    secondLink.localIpv6="fe80::3";secondLink.ifindex=indices[2];
+    node=0;shared.Gateway(sg,3);node=1;first.Terminal(firstLink);node=2;second.Terminal(secondLink);
+    node=0;shared.Gateway(sg,3);assert(descriptors.size()==6);
+    node=1;assert(first.Terminal(firstLink).available==3);node=2;assert(second.Terminal(secondLink).available==3);
+    node=0;shared.Gateway(sg,1);node=1;assert(first.Terminal(firstLink).available==1);
+    node=2;assert(second.Terminal(secondLink).available==1);
+    sg.localIpv4="172.24.1.1";node=0;shared.Gateway(sg,1);TestClock::Advance(5);
+    node=1;first.Terminal(firstLink);node=2;second.Terminal(secondLink);node=0;shared.Gateway(sg,1);
+    node=1;assert(first.Terminal(firstLink).reconfigureIpv4);node=2;assert(second.Terminal(secondLink).reconfigureIpv4);
+
+    auto retiredQuery=lastQuery;auto retiredAck=lastAck;
+    first.Reset();node=1;first.Terminal(firstLink);node=0;shared.Gateway(sg,1);
+    node=1;assert(first.Terminal(firstLink).available==1);node=0;shared.Gateway(sg,1);
+    TestClock::Advance(1);shared.Gateway(sg,1);node=1;first.Terminal(firstLink);node=0;shared.Gateway(sg,1);
+    for(auto &[fd,endpoint]:descriptors){(void)fd;if(endpoint.node==0&&endpoint.family==AF_INET){
+        endpoint.incoming.push_back(retiredQuery);endpoint.incoming.push_back(retiredAck);}}
+    node=0;shared.Gateway(sg,0);node=1;assert(first.Terminal(firstLink).available==0);
+    sg.members.erase(sg.members.begin());node=0;shared.Gateway(sg,0);
+    node=2;assert(second.Terminal(secondLink).available==0);
+    shared.Reset();first.Reset();second.Reset();assert(descriptors.empty());
+    std::cout<<"shared UDP endpoint: two members, independent ACKs, subnet notification and member removal PASS\n";
     std::cout<<"private UDP upstream: dual/IPv4-only/IPv6-only, per-peer isolation, family loss/recovery, ACK/retry/loss, stale token/sequence/source, malformed/truncated frames, expiry, ifindex reuse, failure cleanup and bounded receive PASS\n";
     std::cout<<"steady control traffic: no packet logs PASS; boundary: socket/kernel/radio and scheduling are mocked\n";
 }
