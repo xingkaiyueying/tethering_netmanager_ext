@@ -4,6 +4,7 @@
 #include "netmgr_ext_log_wrapper.h"
 #include <arpa/inet.h>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
@@ -69,21 +70,43 @@ bool ReadProbe(std::string &host, std::string &port, std::string &path, std::str
     }
     return number > 0 && number <= 65535;
 }
+std::string ProbeEndpoint(const sockaddr *address, socklen_t length)
+{
+    char text[INET6_ADDRSTRLEN]{};
+    if (address && address->sa_family == AF_INET && length >= sizeof(sockaddr_in)) {
+        const auto &endpoint = *reinterpret_cast<const sockaddr_in *>(address);
+        (void)inet_ntop(AF_INET, &endpoint.sin_addr, text, sizeof(text));
+        return std::string(text) + ":" + std::to_string(ntohs(endpoint.sin_port));
+    }
+    if (address && address->sa_family == AF_INET6 && length >= sizeof(sockaddr_in6)) {
+        const auto &endpoint = *reinterpret_cast<const sockaddr_in6 *>(address);
+        (void)inet_ntop(AF_INET6, &endpoint.sin6_addr, text, sizeof(text));
+        return "[" + std::string(text) + "]:" + std::to_string(ntohs(endpoint.sin6_port));
+    }
+    return "unknown";
+}
+
 bool Http204(int32_t netId, const addrinfo &address, const std::string &host, const std::string &path)
 {
+    const auto started = std::chrono::steady_clock::now();
+    size_t sent = 0, used = 0;
+    const char *stage = "SOCKET";
     int fd = socket(address.ai_family, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
         return ProbeFailure(netId, address.ai_family, "SOCKET", errno);
     }
     auto check = [&]() {
+        stage = "BIND";
         int32_t bindRet = NetConnClient::GetInstance().BindSocket(fd, netId);
         if (bindRet != 0) {
             return ProbeFailure(netId, address.ai_family, "BIND", bindRet);
         }
+        stage = "NONBLOCK";
         int flags = fcntl(fd, F_GETFL, 0);
         if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
             return false;
         }
+        stage = "CONNECT";
         int ret = connect(fd, address.ai_addr, address.ai_addrlen);
         if (ret != 0 && errno != EINPROGRESS) {
             return ProbeFailure(netId, address.ai_family, "CONNECT", errno);
@@ -91,26 +114,30 @@ bool Http204(int32_t netId, const addrinfo &address, const std::string &host, co
         pollfd wait{fd, POLLOUT, 0};
         int error = 0;
         socklen_t size = sizeof(error);
+        stage = "CONNECT_WAIT";
         int ready = poll(&wait, 1, 3000);
         if (ready <= 0) {
             return ProbeFailure(netId, address.ai_family, "CONNECT_WAIT", ready == 0 ? ETIMEDOUT : errno);
         }
+        stage = "CONNECT_STATUS";
         if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) != 0) {
             return ProbeFailure(netId, address.ai_family, "CONNECT_STATUS", errno);
         }
         if (error != 0) {
             return ProbeFailure(netId, address.ai_family, "CONNECT_STATUS", error);
         }
+        stage = "BLOCKING";
         if (fcntl(fd, F_SETFL, flags) != 0) {
             return false;
         }
+        stage = "TIMEOUT_SETUP";
         timeval timeout{3, 0};
         if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0 ||
             setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
             return false;
         }
         std::string request = "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n";
-        size_t sent = 0;
+        stage = "HTTP_SEND";
         while (sent < request.size()) {
             auto count = send(fd, request.data() + sent, request.size() - sent, MSG_NOSIGNAL);
             if (count <= 0) {
@@ -119,7 +146,7 @@ bool Http204(int32_t netId, const addrinfo &address, const std::string &host, co
             sent += count;
         }
         char response[256]{};
-        size_t used = 0;
+        stage = "HTTP_RECEIVE";
         while (used + 1 < sizeof(response)) {
             auto count = recv(fd, response + used, sizeof(response) - used - 1, 0);
             if (count <= 0) {
@@ -127,13 +154,29 @@ bool Http204(int32_t netId, const addrinfo &address, const std::string &host, co
             }
             used += count;
             if (strstr(response, "\r\n")) {
+                stage = "HTTP_STATUS";
                 bool valid = strncmp(response, "HTTP/1.1 204 ", 13) == 0 || strncmp(response, "HTTP/1.0 204 ", 13) == 0;
                 return valid || ProbeFailure(netId, address.ai_family, "HTTP_STATUS", EPROTO);
             }
         }
+        stage = "HTTP_HEADER";
         return ProbeFailure(netId, address.ai_family, "HTTP_HEADER", EMSGSIZE);
     };
     bool success = check();
+    const int savedError = errno;
+    sockaddr_storage local{};
+    socklen_t localSize = sizeof(local);
+    std::string localEndpoint = getsockname(fd, reinterpret_cast<sockaddr *>(&local), &localSize) == 0 ?
+        ProbeEndpoint(reinterpret_cast<const sockaddr *>(&local), localSize) : "unknown";
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][ProbeSocket] netId=%{public}d family=%{public}d host=%{public}s "
+                     "local=%{public}s remote=%{public}s stage=%{public}s sent=%{public}zu received=%{public}zu "
+                     "elapsedMs=%{public}lld success=%{public}d",
+                     netId, address.ai_family, host.c_str(), localEndpoint.c_str(),
+                     ProbeEndpoint(address.ai_addr, address.ai_addrlen).c_str(), stage, sent, used,
+                     static_cast<long long>(elapsed), success);
+    errno = savedError;
     close(fd);
     return success;
 }
@@ -147,7 +190,19 @@ bool CheckFamily(int32_t netId, int family, const std::string &host, const std::
     queryparam query{};
     query.qp_netid = netId;
     query.qp_type = QEURY_TYPE_NETSYS;
+    const auto started = std::chrono::steady_clock::now();
     int resolveRet = getaddrinfo_ext(host.c_str(), port.c_str(), &hints, &addresses, &query);
+    const int savedError = errno;
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    unsigned count = 0;
+    for (auto entry = addresses; resolveRet == 0 && entry; entry = entry->ai_next) {
+        count += entry->ai_family == family;
+    }
+    NETMGR_EXT_LOG_I("[NearlinkIpShare][ProbeDns] netId=%{public}d family=%{public}d host=%{public}s "
+                     "code=%{public}d addresses=%{public}u elapsedMs=%{public}lld",
+                     netId, family, host.c_str(), resolveRet, count, static_cast<long long>(elapsed));
+    errno = savedError;
     if (resolveRet != 0) {
         return ProbeFailure(netId, family, "DNS", resolveRet);
     }
