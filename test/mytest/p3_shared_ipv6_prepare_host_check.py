@@ -27,6 +27,7 @@ with tempfile.TemporaryDirectory(prefix='shared-lla-') as directory:
 #include <iostream>
 #undef IFF_UP
 #undef IFF_MULTICAST
+constexpr const char *IFACE="sleip0";
 constexpr int IFNAMSIZ=16,SOCK_CLOEXEC=0x80000,IFF_UP=1,IFF_MULTICAST=0x1000,IFF_NOARP=0x80;
 constexpr int SIOCGIFFLAGS=1,SIOCSIFFLAGS=2;
 struct ifreq {char ifr_name[16]{};short ifr_flags=IFF_UP;};
@@ -41,7 +42,7 @@ class NearlinkIpv6Runtime {public:
  bool Set(const std::string&k,const std::string&v){settings[k]=v;return true;}
  bool SetToken(){return true;}bool Cleanup(){return true;}
  bool AddAddress(const std::string&a){added=a;return true;}
- bool Prepare(bool,const std::string&,const std::string& = "sleip0",const std::string& = "");
+ bool Prepare(bool,const std::string&,const std::string& = "");
 };
 '''
     text+=function('bool Layer2Token(')+function('bool NearlinkIpv6Runtime::Prepare(')

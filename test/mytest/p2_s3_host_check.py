@@ -43,7 +43,7 @@ class Parcelable { public: virtual ~Parcelable()=default; virtual bool Marshalli
 #include "mock.h"
 namespace OHOS::NetManagerStandard {
 class NearlinkIpv6Runtime { public:
-bool Prepare(bool,const std::string&,const std::string& = "sleip0",const std::string& = ""){return call("ipv6-prepare")==0;}
+bool Prepare(bool,const std::string&,const std::string& = ""){return call("ipv6-prepare")==0;}
 void PrepareGatewayAddress(){call("ipv6-address-prepare");}
 std::string prefix;bool routed=false;
 inline static unsigned upstreamEpoch=0;
@@ -56,7 +56,7 @@ const std::string &Gateway()const{static std::string address="2001:db8::1";retur
 void SetGatewayPrefix(const std::string &p){prefix=p;}
 bool OwnsPrefix(const std::string &p)const{return !p.empty()&&prefix==p;}
 bool HasDefaultRouter()const{return routed;}
-static std::string DeriveGatewayPrefix(const NetLinkInfo *u,uint32_t s){return u ? "2001:db8:"+std::to_string(10+upstreamEpoch)+":"+std::to_string(s+1)+"::" : "";}
+static std::string DeriveGatewayPrefix(const NetLinkInfo *u){return u ? "2001:db8:"+std::to_string(10+upstreamEpoch)+":"+std::to_string(1)+"::" : "";}
 bool Advertise(const NetLinkInfo*,bool f,bool){routed=f;return call("ra")==0;}
 bool Cleanup(){return call("ipv6-cleanup")==0;}
 }; }
@@ -64,6 +64,11 @@ bool Cleanup(){return call("ipv6-cleanup")==0;}
     # Copy only the controller header so the platform runtime double is selected explicitly.
     put('nearlink_ipshare_controller.h', (source / 'include/nearlink_ipshare_controller.h').read_text())
     put('nearlink_ipshare_controller.cpp', (source / 'src/nearlink_ipshare_controller.cpp').read_text())
+    if os.environ.get('P3_EVENT_SNAPSHOT_NEGATIVE'):
+        text = (out / 'nearlink_ipshare_controller.cpp').read_text(encoding='utf-8')
+        assert text.count('self->HandleNearlinkStatus(current);') == 1
+        put('nearlink_ipshare_controller.cpp', text.replace('self->HandleNearlinkStatus(current);',
+                                                         'self->HandleNearlinkStatus(status);'))
     stop_before = os.environ.get('P3_LOWER_STOP_BEFORE_REF')
     if stop_before:
         payload = subprocess.check_output(['git', '-c', f'safe.directory={repo.as_posix()}', '-C', str(repo),
@@ -203,11 +208,11 @@ int main() {
     DhcpL3Ipv6Snapshot addresses{}; addresses.addressCount=1;
     auto &a=addresses.addresses[0]; strcpy(a.address,"fd77:77:1::2");
     a.ifindex=7; a.prefixLength=64; a.preferredLifetime=120; a.validLifetime=300;
-    c->OnIpv6Addresses("sleip0",addresses); q.Drain();
+    c->OnIpv6Addresses("sleip0",addresses,c->generation_); q.Drain();
     DhcpResult v6{}; v6.iptype=1; strcpy(v6.strOptRouter1,"fe80::1");
     v6.ipv6LifeTime.routerLifeTime=180; v6.dnsList.dnsNumber=1;
     strcpy(v6.dnsList.dnsAddr[0],"fd77:77:1::53");
-    c->OnDhcpSuccess(0,"sleip0",v6); q.Drain();
+    c->OnDhcpSuccess(0,"sleip0",v6,c->generation_); q.Drain();
     if(fastConfig)assert(probeThreads.size()==1 && probeThreads.front().ipv6);
     assert(net.available && net.lastLink.netAddrList_.size()==1);
     assert(c->status_.ipv6.configurationAvailable && !c->status_.ipv6.externalAvailable);
@@ -221,7 +226,7 @@ int main() {
     DhcpResult v4{}; v4.iptype=0; v4.isOptSuc=true; v4.uOptLeasetime=600;
     strcpy(v4.strOptClientId,"192.168.77.2"); strcpy(v4.strOptSubnet,"255.255.255.0");
     strcpy(v4.strOptRouter1,"192.168.77.1"); strcpy(v4.strOptDns1,"192.168.77.1");
-    c->OnDhcpSuccess(0,"sleip0",v4); q.Drain();
+    c->OnDhcpSuccess(0,"sleip0",v4,c->generation_); q.Drain();
     assert(net.lastLink.netAddrList_.size()==2 && net.lastLink.routeList_.size()==4);
     assert(c->netSupplierId_==supplier && net.registrations==1);
     // A slow/stale IPv6 probe cannot clear or delay an unchanged IPv4 result.
@@ -231,7 +236,7 @@ int main() {
     assert(c->status_.ipv4.validation==2 && c->status_.ipv4.externalAvailable);
     assert(c->status_.ipv6.validation==1);
     strcpy(v6.dnsList.dnsAddr[0],"fd77:77:1::54");
-    c->OnDhcpSuccess(0,"sleip0",v6);q.Drain();
+    c->OnDhcpSuccess(0,"sleip0",v6,c->generation_);q.Drain();
     assert(c->status_.ipv4.validation==2 && c->status_.ipv4.externalAvailable);
     auto stale6=TakeProbe(true);stale6();q.Drain();
     assert(c->status_.ipv6.validation==(fastConfig ? 1 : 0) && c->status_.ipv4.validation==2);
@@ -241,7 +246,7 @@ int main() {
     assert(c->status_.ipv4.validation==2 && c->status_.ipv4.externalAvailable);
     // A genuine fresh IPv4 failure must still replace PASS after its own DNS changes.
     probe4=3;strcpy(v4.strOptDns1,"192.168.77.53");
-    c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();c->ValidateFamilies();
+    c->OnDhcpSuccess(0,"sleip0",v4,c->generation_);q.Drain();c->ValidateFamilies();
     assert(probeThreads.size()==1);
     complete4=TakeProbe(false);complete4();q.Drain();
     assert(c->status_.ipv4.validation==3 && !c->status_.ipv4.externalAvailable);
@@ -255,29 +260,29 @@ int main() {
     complete4=TakeProbe(false);complete4();q.Drain();
     complete6=TakeProbe(true);complete6();q.Drain();
     strcpy(v4.strOptDns1,"192.168.77.1");probe4=2;
-    c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();c->ValidateFamilies();
+    c->OnDhcpSuccess(0,"sleip0",v4,c->generation_);q.Drain();c->ValidateFamilies();
     assert(probeThreads.size()==1);
     // A stopped session cannot publish a late PASS into the next session.
     auto late4=TakeProbe(false);
     puts("per-family validation: independent completion, IPv6 changes retain IPv4 PASS, stale family/session rejection, genuine failure retained PASS");
     { Parcel parcel; assert(c->status_.Marshalling(parcel)); }
-    c->OnDhcpFailure(4,"sleip0","renew"); q.Drain();
+    c->OnDhcpFailure(4,"sleip0","renew",c->generation_); q.Drain();
     assert(net.lastLink.netAddrList_.size()==2);
-    c->OnDhcpFailure(1,"sleip0","lost"); q.Drain();
+    c->OnDhcpFailure(1,"sleip0","lost",c->generation_); q.Drain();
     assert(net.lastLink.netAddrList_.size()==1 && net.lastLink.netAddrList_[0].family_==AF_INET6);
     assert(c->netSupplierId_==supplier && c->nearlinkStarted_);
-    c->OnDhcpSuccess(0,"sleip0",v4); q.Drain();
-    v6.dnsList.dnsNumber=0; c->OnDhcpSuccess(0,"sleip0",v6); q.Drain();
+    c->OnDhcpSuccess(0,"sleip0",v4,c->generation_); q.Drain();
+    v6.dnsList.dnsNumber=0; c->OnDhcpSuccess(0,"sleip0",v6,c->generation_); q.Drain();
     assert(net.lastLink.dnsList_.size()==1 && c->status_.ipv4.configurationAvailable);
     assert(!c->status_.ipv6.configurationAvailable);
-    addresses.addressCount=0; c->OnIpv6Addresses("sleip0",addresses);
-    c->OnDhcpSuccess(0,"sleip0",v6); q.Drain();
+    addresses.addressCount=0; c->OnIpv6Addresses("sleip0",addresses,c->generation_);
+    c->OnDhcpSuccess(0,"sleip0",v6,c->generation_); q.Drain();
     assert(net.lastLink.netAddrList_.size()==1 && net.lastLink.netAddrList_[0].family_==AF_INET);
     const auto &e=OHOS::Nearlink::NearlinkIpShareClient::GetInstance().evidence;
     assert(e.size()==2 && e.back().validLifetime==0);
     // A failed family update restores the committed aggregate without deleting the other family.
     errors["link-info"]=-7; strcpy(v4.strOptClientId,"192.168.77.3");
-    c->OnDhcpSuccess(0,"sleip0",v4); q.Drain();
+    c->OnDhcpSuccess(0,"sleip0",v4,c->generation_); q.Drain();
     assert(net.lastLink.netAddrList_[0].address_=="192.168.77.2" && c->netSupplierId_==supplier);
     auto expiry=c->pendingLeaseExpiry_;
     errors.clear();
@@ -286,21 +291,21 @@ int main() {
     assert(!c->ipv4PublishPending_ && c->leaseExpiry_==expiry);
     assert(std::count(calls.begin(),calls.end(),"dhcp-start")==starts);
     assert(net.lastLink.netAddrList_[0].address_=="192.168.77.3");
-    c->OnDhcpSuccess(0,"sleip0",v4); c->StopTerminal(); q.Drain();
+    c->OnDhcpSuccess(0,"sleip0",v4,c->generation_); c->StopTerminal(); q.Drain();
     assert(c->status_.state==NearlinkIpShareState::IDLE && !c->nearlinkStarted_);
     late4();q.Drain();assert(c->status_.ipv4.validation==0 && !c->status_.ipv4.externalAvailable);
-    c->OnDhcpSuccess(0,"sleip0",v4); q.Drain();
+    c->OnDhcpSuccess(0,"sleip0",v4,c->generation_); q.Drain();
     assert(c->netSupplierId_==0);
     errors["link-info"]=-7;
     assert(c->StartTerminal(peer,3)==0);q.Drain();
     link.generation=2;link.sequence=1;OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
-    c->OnNearlinkStatus(link);q.Drain();c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();
+    c->OnNearlinkStatus(link);q.Drain();c->OnDhcpSuccess(0,"sleip0",v4,c->generation_);q.Drain();
     assert(c->ipv4PublishPending_ && !c->retryIpv4_ && c->netSupplierId_==0);
     expiry=c->pendingLeaseExpiry_;errors.clear();c->RetryTerminalNetwork();
     assert(c->status_.ipv4.configurationAvailable && c->leaseExpiry_==expiry);
-    errors["link-info"]=-7;c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();
+    errors["link-info"]=-7;c->OnDhcpSuccess(0,"sleip0",v4,c->generation_);q.Drain();
     // Force a different address so the normal equality fast path is not used.
-    strcpy(v4.strOptClientId,"192.168.77.4");c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();
+    strcpy(v4.strOptClientId,"192.168.77.4");c->OnDhcpSuccess(0,"sleip0",v4,c->generation_);q.Drain();
     c->pendingLeaseExpiry_=std::chrono::steady_clock::now()-std::chrono::seconds(1);
     errors.clear();c->RetryTerminalNetwork();assert(!c->ipv4PublishPending_&&c->retryIpv4_);
     c->StopTerminal();q.Drain();
@@ -391,6 +396,22 @@ int main() {
     assert(c->gatewayNetwork_.ipv6.CurrentPrefix()==preservedPrefix&&c->gatewayNetwork_.ipv6Ready);
     assert(std::count(calls.begin(),calls.end(),"server-stop")==1);
     assert(std::count(calls.begin(),calls.end(),"server-start")==1);
+    auto emptyEvent=link;++emptyEvent.sequence;
+    for(auto &member:emptyEvent.peerLinks){member.ipv4Address.clear();member.ipv6Addresses.clear();}
+    link.sequence=emptyEvent.sequence;lower.snapshot=link;calls.clear();
+    c->OnNearlinkStatus(emptyEvent);q.Drain();
+    assert(c->gatewayNetwork_.retiredIpv4.size()==1);
+    assert(c->addressPeers_.at(0).ipv4Address==link.peerLinks[0].ipv4Address);
+    assert(std::count(calls.begin(),calls.end(),"address-del")==0);
+    assert(std::count(calls.begin(),calls.end(),"route-del")==0);
+    ++emptyEvent.sequence;link.sequence=emptyEvent.sequence;lower.snapshot=link;
+    errors["snapshot"]=-1;q.delayed.clear();c->OnNearlinkStatus(emptyEvent);q.Drain();
+    assert(c->gatewayNetwork_.retiredIpv4.size()==1&&!q.delayed.empty());
+    auto retrySnapshot=q.delayed.back();q.delayed.clear();errors.clear();retrySnapshot();q.Drain();
+    assert(c->gatewayNetwork_.retiredIpv4.size()==1&&c->linkSequence_==link.sequence);
+    auto staleEvent=emptyEvent;staleEvent.generation=link.generation-1;
+    c->OnNearlinkStatus(staleEvent);q.Drain();assert(c->gatewayNetwork_.retiredIpv4.size()==1);
+    puts("R02 complete event snapshot, failed query retry and stale event isolation PASS");
     link.peerLinks[0].ipv4Address="172.24.1.2";link.peerLinks[1].ipv4Address="172.24.1.3";
     ++link.sequence;lower.snapshot=link;c->ConfigureUpstream();assert(c->gatewayNetwork_.retiredIpv4.empty());
     assert(c->StopGateway()==0);q.Drain();net.hasDefault=false;net.upstreamProperties={};
@@ -517,10 +538,10 @@ int main() {
     link.generation=900;link.sequence=1;link.selectedMode=3;
     OHOS::Nearlink::NearlinkIpShareClient::GetInstance().snapshot=link;
     c->OnNearlinkStatus(link);q.Drain();
-    addresses.addressCount=1;c->OnIpv6Addresses("sleip0",addresses);q.Drain();
+    addresses.addressCount=1;c->OnIpv6Addresses("sleip0",addresses,c->generation_);q.Drain();
     v6.ipv6LifeTime.routerLifeTime=180;v6.dnsList.dnsNumber=1;
     strcpy(v6.dnsList.dnsAddr[0],"fd77:77:1::53");
-    c->OnDhcpSuccess(0,"sleip0",v6);c->OnDhcpSuccess(0,"sleip0",v4);q.Drain();
+    c->OnDhcpSuccess(0,"sleip0",v6,c->generation_);c->OnDhcpSuccess(0,"sleip0",v4,c->generation_);q.Drain();
     NearlinkUpstreamSignal::remote={true,3};
     assert(c->PollTerminalUpstream());c->RefreshFamilyStatus();q.Drain();
     while(!probeThreads.empty()){auto job=probeThreads.front();probeThreads.pop_front();job();q.Drain();}

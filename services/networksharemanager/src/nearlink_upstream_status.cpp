@@ -1,4 +1,17 @@
-/* Copyright (c) 2026 Huawei Device Co., Ltd. Licensed under the Apache License, Version 2.0. */
+/*
+ * Copyright (C) 2026 Huawei Device Co., Ltd.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 #include "nearlink_ipshare_controller.h"
 
 #include <new>
@@ -10,9 +23,6 @@
 namespace OHOS::NetManagerStandard {
 void NearlinkIpShareController::NotifyGatewayUpstream(SharedNetworkContext &peer, bool ipv4)
 {
-    if (peer.releasing) {
-        return;
-    }
     if (!peer.upstreamSignal) {
         peer.upstreamSignal.reset(new (std::nothrow) NearlinkUpstreamSignal());
     }
@@ -27,7 +37,7 @@ void NearlinkIpShareController::NotifyGatewayUpstream(SharedNetworkContext &peer
     link.ipv6 = peer.mode == 3 && peer.ipv6Prepared;
     link.localIpv6 = peer.ipv6.LinkLocal();
     for (const auto &[slot, member] : addressPeers_) {
-        if (!member.releasing && member.active) {
+        if (member.active) {
             NearlinkUpstreamSignal::Link::Member endpoint;
             endpoint.generation = member.generation;
             endpoint.ipv4 = member.ipv4Address;

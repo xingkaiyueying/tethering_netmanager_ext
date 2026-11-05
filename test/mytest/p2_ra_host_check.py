@@ -138,16 +138,10 @@ ssize_t recvmsg(int,msghdr*,int);
 ''')
     with (out/'securec.h').open('a', encoding='utf-8') as file:
         file.write('inline int strncpy_s(char*d,size_t n,const char*s,size_t k){if(k>=n)return -1;memcpy(d,s,k);d[k]=0;return 0;}\n')
-    fixture = repo/'test/mytest/sleip_ipv6_config.cpp'
-    fixture_text = fixture.read_text(encoding='utf-8')
-    assert 'if (HasAddress(address)) return true;' in fixture_text
-    assert 'owner.KeepAddresses();' in fixture_text
-    assert 'gateway_retained_until_interface_cleanup=1' in fixture_text
-    assert 'first_source_confirmation=REQUIRED_WITHIN_60S' in fixture_text
     put('router_advertisement_daemon.cpp', production)
-    for source in (out/'router_advertisement_daemon.cpp', fixture):
-        subprocess.run(['g++','-std=c++17','-include','memory','-fsyntax-only','-I'+str(out),str(source)],check=True)
-    print('RA daemon with std::mutex and native IPv6 fixture syntax/retained-address policy=PASS')
+    subprocess.run(['g++','-std=c++17','-include','memory','-fsyntax-only','-I'+str(out),
+                    str(out/'router_advertisement_daemon.cpp')],check=True)
+    print('RA production daemon syntax with std::mutex=PASS')
     # The reported product header uses ffrt::mutex. Compile the entire same production
     # translation unit against that member type, without a conversion to std::mutex.
     header = (out/'router_advertisement_daemon.h').read_text(encoding='utf-8')

@@ -442,7 +442,7 @@ int32_t NearlinkIpShareController::StartGatewayAny(int32_t mode, int32_t maxTerm
     }
     NearlinkPeerAddresses addresses;
     if (!NearlinkPeerAddresses::Allocate(configuration_.GetNearlinkIpv4Pool(), configuration_.GetNearlinkIpv6Pool(),
-                                         maxTerminals, 0, addresses, mode == 3)) {
+                                         maxTerminals, addresses, mode == 3)) {
         return NETMANAGER_EXT_ERR_PARAMETER_ERROR;
     }
     return Start(NearlinkIpShareRole::GATEWAY, "", mode, maxTerminals);
@@ -665,9 +665,15 @@ void NearlinkIpShareController::OnNearlinkStatus(const OHOS::Nearlink::NearlinkI
     NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, status, generation = generation_.load()]() {
         if (self->IsCurrentSession(generation)) {
             OHOS::Nearlink::NearlinkIpShareStatus current;
-            if (OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current) == 0 &&
-                current.generation == status.generation) {
-                self->HandleNearlinkStatus(status);
+            if (OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current) != 0) {
+                // Keep the current address/resource ledger until a complete snapshot is available.
+                NetworkShareTracker::GetInstance().SubmitNearlinkTask([self, status, generation]() {
+                    if (self->IsCurrentSession(generation)) {
+                        self->OnNearlinkStatus(status);
+                    }
+                }, 1000000);
+            } else if (current.generation == status.generation && current.sequence >= status.sequence) {
+                self->HandleNearlinkStatus(current);
             }
         }
     });
@@ -811,8 +817,7 @@ void NearlinkIpShareController::ReconcileGatewayPeers(const OHOS::Nearlink::Near
 
 void NearlinkIpShareController::OnInterfaceAddressChanged(const std::string &iface)
 {
-    if (iface.size() <= 5 || iface.compare(0, 5, "sleip") != 0 ||
-        !std::all_of(iface.begin() + 5, iface.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+    if (iface != IFACE_NAME) {
         return;
     }
     const uint32_t index = if_nametoindex(iface.c_str());
@@ -960,7 +965,7 @@ void NearlinkIpShareController::OnDhcpSuccess(int32_t status, const std::string 
     NETMGR_EXT_LOG_I("[NearlinkIpShare][DHCP] async success callback interface=%{public}s code=%{public}d",
                      iface.c_str(), status);
     std::lock_guard lock(mutex_);
-    if (session != 0 && session != generation_) {
+    if (session == 0 || session != generation_) {
         return;
     }
     auto self = shared_from_this();
@@ -990,7 +995,7 @@ void NearlinkIpShareController::OnDhcpFailure(int32_t status, const std::string 
     NETMGR_EXT_LOG_E("[NearlinkIpShare][DHCP] async failure callback interface=%{public}s code=%{public}d",
                      iface.c_str(), status);
     std::lock_guard lock(mutex_);
-    if (session != 0 && session != generation_) {
+    if (session == 0 || session != generation_) {
         return;
     }
     auto self = shared_from_this();
@@ -1157,7 +1162,7 @@ void NearlinkIpShareController::OnIpv6Addresses(const std::string &iface, const 
         return;
     }
     std::lock_guard lock(mutex_);
-    if (session != 0 && session != generation_) {
+    if (session == 0 || session != generation_) {
         return;
     }
     auto self = shared_from_this();
@@ -1515,8 +1520,11 @@ void NearlinkIpShareController::ScheduleMaintenance(uint64_t generation)
                 return;
             }
             OHOS::Nearlink::NearlinkIpShareStatus current;
-            if (OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current) != 0 ||
-                (current.generation != self->linkGeneration_ &&
+            if (OHOS::Nearlink::NearlinkIpShareClient::GetInstance().GetStatus(current) != 0) {
+                self->ScheduleMaintenance(generation);
+                return;
+            }
+            if ((current.generation != self->linkGeneration_ &&
                  current.role != OHOS::Nearlink::NearlinkIpShareRole::GATEWAY) ||
                 current.state == OHOS::Nearlink::NearlinkIpShareState::IDLE ||
                 current.state == OHOS::Nearlink::NearlinkIpShareState::ERROR) {

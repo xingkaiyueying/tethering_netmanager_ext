@@ -119,9 +119,7 @@ struct NearlinkUpstreamSignal::Impl {
         int fd{-1};
         sockaddr_storage peer{};
         socklen_t size{0};
-        Token token{};
-        uint64_t acknowledged{0};
-        Clock::time_point seen{}, sent{}, queried{}, openRetry{};
+        Clock::time_point queried{}, openRetry{};
         std::vector<Subscriber> subscribers;
     };
     Link link;
@@ -187,17 +185,14 @@ struct NearlinkUpstreamSignal::Impl {
 
     void Send(Socket &entry, uint8_t kind, Clock::time_point now)
     {
-        if (entry.fd < 0 || (gateway && entry.peer.ss_family == 0)) {
+        if (entry.fd < 0) {
             return;
         }
-        const auto frame = Encode(kind, kind == STATUS ? state.available : 0, gateway ? entry.token : token,
-                                  kind == QUERY ? 0 : (gateway ? sequence : receivedSequence));
+        const auto frame = Encode(kind, 0, token, kind == QUERY ? 0 : receivedSequence);
         if (sendto(entry.fd, frame.data(), frame.size(), MSG_DONTWAIT, reinterpret_cast<const sockaddr *>(&entry.peer),
                    entry.size) == static_cast<ssize_t>(frame.size())) {
             if (kind == QUERY) {
                 entry.queried = now;
-            } else if (kind == STATUS) {
-                entry.sent = now;
             }
         }
     }

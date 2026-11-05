@@ -92,7 +92,7 @@ bool Layer2Token(const std::string &layer2, in6_addr &token)
     return true;
 }
 
-bool DeriveDownstreamPrefix(const NetLinkInfo *upstream, in6_addr &downstream, std::string &text, uint32_t slot = 0)
+bool DeriveDownstreamPrefix(const NetLinkInfo *upstream, in6_addr &downstream, std::string &text)
 {
     if (upstream == nullptr) {
         return false;
@@ -148,8 +148,8 @@ bool DeriveDownstreamPrefix(const NetLinkInfo *upstream, in6_addr &downstream, s
     std::sort(candidates.begin(), candidates.end(),
               [](const auto &left, const auto &right) { return std::memcmp(left.s6_addr, right.s6_addr, 8) < 0; });
     downstream = candidates.front();
-    // P2 uses the next /64. P3 extends it by slot, preserving slot zero and checking overflow.
-    uint64_t carry = static_cast<uint64_t>(slot) + 1;
+    // The shared downstream uses the next /64, with overflow and conflict checks.
+    uint64_t carry = 1;
     for (int i = 7; i >= 0; --i) {
         carry += downstream.s6_addr[i];
         downstream.s6_addr[i] = static_cast<uint8_t>(carry);
@@ -172,11 +172,11 @@ bool DeriveDownstreamPrefix(const NetLinkInfo *upstream, in6_addr &downstream, s
     return true;
 }
 } // namespace
-std::string NearlinkIpv6Runtime::DeriveGatewayPrefix(const NetLinkInfo *upstream, uint32_t slot)
+std::string NearlinkIpv6Runtime::DeriveGatewayPrefix(const NetLinkInfo *upstream)
 {
     in6_addr address{};
     std::string prefix;
-    return slot < 32 && DeriveDownstreamPrefix(upstream, address, prefix, slot) ? prefix : "";
+    return DeriveDownstreamPrefix(upstream, address, prefix) ? prefix : "";
 }
 bool NearlinkIpv6Runtime::Set(const std::string &key, const std::string &value)
 {
@@ -259,15 +259,10 @@ bool NearlinkIpv6Runtime::SetToken()
     }
     return ok;
 }
-bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2, const std::string &iface,
-                                  const std::string &prefix)
+bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2, const std::string &prefix)
 {
-    if (iface.size() < 6 || iface.size() >= IFNAMSIZ || iface.compare(0, 5, "sleip") != 0 ||
-        !std::all_of(iface.begin() + 5, iface.end(), [](char c) { return c >= '0' && c <= '9'; })) {
-        return false;
-    }
     if (prepared_) {
-        return iface == iface_ && prefix == configuredPrefix_ && ifindex_ == if_nametoindex(iface_.c_str());
+        return prefix == configuredPrefix_ && ifindex_ == if_nametoindex(iface_.c_str());
     }
     if (ifindex_ && !Cleanup()) {
         return false;
@@ -276,7 +271,7 @@ bool NearlinkIpv6Runtime::Prepare(bool gateway, const std::string &layer2, const
     if (!Layer2Token(layer2, token)) {
         return false;
     }
-    iface_ = iface;
+    iface_ = IFACE;
     configuredPrefix_ = prefix;
     ifindex_ = if_nametoindex(iface_.c_str());
     layer2_ = layer2;

@@ -149,17 +149,12 @@ int main(){
  assert(!runtime.Advertise(&linkLocal,true));assert(routeQueries==0);
  assert(runtime.prefix_.empty() && !runtime.HasDefaultRouter());
  NetLinkInfo up;up.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:20::1234"});
- assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up,0)=="2001:db8:10:21::");
- assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up,1)=="2001:db8:10:22::");
- std::set<std::string> derived;
- for(unsigned slot=0;slot<32;++slot) assert(derived.insert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up,slot)).second);
+ assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up)=="2001:db8:10:21::");
  up.netAddrList_[0].address_="2001:db8:10:ff::1";
- assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up,0)=="2001:db8:10:100::");
+ assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up)=="2001:db8:10:100::");
  up.netAddrList_[0].address_="2001:db8:10:20::1234";
- NetLinkInfo colliding=up;colliding.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:22::1"});
- assert(!NearlinkIpv6Runtime::DeriveGatewayPrefix(&colliding,0).empty());
- assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&colliding,1).empty());
- assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&up,32).empty());
+ NetLinkInfo colliding=up;colliding.netAddrList_.push_back({AF_INET6,64,"2001:db8:10:21::1"});
+ assert(NearlinkIpv6Runtime::DeriveGatewayPrefix(&colliding).empty());
 
  Route def;def.destination_.family_=AF_INET6;up.routeList_.push_back(def);
  {std::ofstream f("if_inet6.txt");}
@@ -289,17 +284,17 @@ int main(){
   std::set<std::string> subnets,prefixes;
   for(unsigned slot=0;slot<capacity;++slot) {
    NearlinkPeerAddresses address;
-   assert(NearlinkPeerAddresses::Allocate("172.24.0.0/16","fd77:6e6c:6970::/48",capacity,slot,address,true));
+   assert(NearlinkPeerAddresses::Allocate("172.24.0.0/16","fd77:6e6c:6970::/48",capacity,address,true));
    subnets.insert(address.subnet); prefixes.insert(address.prefix);
    assert(subnets.size()==1 && prefixes.size()==1 && address.end=="172.24.0.254");
    assert(address.Conflicts(address.gateway,24) && !address.Conflicts("192.168.62.1",24));
   }
  }
  NearlinkPeerAddresses address;
- assert(!NearlinkPeerAddresses::Allocate("172.24.0.1/16","fd77::/48",2,0,address,true));
- assert(NearlinkPeerAddresses::Allocate("172.24.0.0/24","fd77::/64",32,31,address,true));
- assert(NearlinkPeerAddresses::Allocate("172.24.0.0/16","fd77::/64",32,31,address,true));
- assert(!NearlinkPeerAddresses::Allocate("8.0.0.0/8","fd77::/48",2,0,address,true));
+ assert(!NearlinkPeerAddresses::Allocate("172.24.0.1/16","fd77::/48",2,address,true));
+ assert(NearlinkPeerAddresses::Allocate("172.24.0.0/24","fd77::/64",32,address,true));
+ assert(NearlinkPeerAddresses::Allocate("172.24.0.0/16","fd77::/64",32,address,true));
+ assert(!NearlinkPeerAddresses::Allocate("8.0.0.0/8","fd77::/48",2,address,true));
  NearlinkIpv6Runtime a,b;
  a.iface_="sleip0";a.ifindex_=7;a.layer2_="02:11:22:33:44:55";a.configuredPrefix_="fd77:6e6c:6970::";
  b.iface_="sleip1";b.ifindex_=7;b.layer2_=a.layer2_;b.configuredPrefix_="fd77:6e6c:6970:1::";

@@ -59,10 +59,10 @@ public:
     void ReplayStatus(const sptr<INearlinkIpShareEventCallback> &callback) const;
 
     void OnNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
-    void OnDhcpSuccess(int32_t status, const std::string &iface, const DhcpResult &result, uint64_t session = 0);
-    void OnDhcpFailure(int32_t status, const std::string &iface, const std::string &reason, uint64_t session = 0);
+    void OnDhcpSuccess(int32_t status, const std::string &iface, const DhcpResult &result, uint64_t session);
+    void OnDhcpFailure(int32_t status, const std::string &iface, const std::string &reason, uint64_t session);
     void OnUpstreamChanged();
-    void OnIpv6Addresses(const std::string &iface, const DhcpL3Ipv6Snapshot &snapshot, uint64_t session = 0);
+    void OnIpv6Addresses(const std::string &iface, const DhcpL3Ipv6Snapshot &snapshot, uint64_t session);
     void OnInterfaceAddressChanged(const std::string &iface);
 
 private:
@@ -74,9 +74,11 @@ private:
     void HandleNearlinkStatus(const OHOS::Nearlink::NearlinkIpShareStatus &status);
     void ReconcileGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
     void ConfigureGatewayPeers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
+    bool SyncGatewayMembers(const OHOS::Nearlink::NearlinkIpShareStatus &link);
+    void CleanupRetiredSubnets();
     struct SharedNetworkContext {
         uint64_t generation{0};
-        uint32_t slot{0}, ifindex{0};
+        uint32_t ifindex{0};
         int32_t mode{0};
         std::string iface;
         NearlinkPeerAddresses addresses;
@@ -87,7 +89,6 @@ private:
             ipv6Routed{false};
         std::string upstreamIface;
         int32_t upstreamNetId{-1};
-        bool releasing{false};
         int32_t upstreamError{0};
         int32_t ipv4Error{0}, ipv6Error{0};
         std::chrono::steady_clock::time_point ipv6PendingSince{};
@@ -101,12 +102,10 @@ private:
     int32_t ConfigureGatewayPeerIpv4(SharedNetworkContext &peer, const NetLinkInfo *upstream);
     struct MemberAddressContext {
         uint64_t generation{0};
-        uint32_t slot{0}, ifindex{0};
         int32_t mode{0};
         std::string iface, ipv4Address;
         uint32_t ipv4LeaseLifetime{0};
         std::vector<NearlinkIpShareAddress> ipv6Addresses;
-        bool releasing{false};
         bool active{false};
     };
     SharedNetworkContext gatewayNetwork_;

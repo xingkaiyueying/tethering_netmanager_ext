@@ -25,8 +25,7 @@ namespace OHOS::NetManagerStandard {
 // Owns only settings on the current sleip0 ifindex. Never executes shell commands.
 class NearlinkIpv6Runtime {
 public:
-    bool Prepare(bool gateway, const std::string &layer2, const std::string &iface = "sleip0",
-                 const std::string &prefix = "");
+    bool Prepare(bool gateway, const std::string &layer2, const std::string &prefix = "");
     bool Advertise(const NetLinkInfo *upstream, bool forwarding, bool dnsReady = true);
     // Start the first prefix's local address/DAD without publishing an RA.
     void PrepareGatewayAddress();
@@ -34,7 +33,7 @@ public:
     {
         configuredPrefix_ = prefix;
     }
-    static std::string DeriveGatewayPrefix(const NetLinkInfo *upstream, uint32_t slot);
+    static std::string DeriveGatewayPrefix(const NetLinkInfo *upstream);
     static bool HasDefaultRouteOnInterface(const std::string &iface, int32_t family);
     bool HasDefaultRouter() const
     {
@@ -68,10 +67,6 @@ public:
     const std::string &LinkLocal() const
     {
         return linkLocal_;
-    }
-    const std::string &Gateway() const
-    {
-        return gateway_;
     }
 
 private:
