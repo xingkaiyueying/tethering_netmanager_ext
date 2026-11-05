@@ -14,6 +14,9 @@ with tempfile.TemporaryDirectory(prefix='p2-s3-') as directory:
     def put(name, text):
         file = out / name
         file.parent.mkdir(parents=True, exist_ok=True)
+        # Preserve production arguments; map HiLog privacy annotations to printf for host diagnostics.
+        if name.endswith('.cpp'):
+            text = text.replace('%{public}', '%').replace('%{private}', '%')
         file.write_text(text, encoding='utf-8')
     put('mock.h', (Path(__file__).with_name('p2_s3_platform_mock.h')).read_text())
     put('parcel.h', '''#pragma once
@@ -75,6 +78,11 @@ bool Cleanup(){return call("ipv6-cleanup")==0;}
             'show', stop_before + ':services/networksharemanager/src/nearlink_ipshare_controller.cpp'])
         (out / 'nearlink_ipshare_controller.cpp').write_bytes(payload)
     put('nearlink_peer_address.cpp', (source / 'src/nearlink_peer_address.cpp').read_text())
+    if os.environ.get('P3_MEMBER_LOG_FORMAT_NEGATIVE'):
+        text = (out / 'nearlink_peer_address.cpp').read_text(encoding='utf-8')
+        assert text.count('member removed slot=%u epoch=%llu') == 1
+        put('nearlink_peer_address.cpp', text.replace('member removed slot=%u epoch=%llu',
+                                                    'member removed epoch=%llu'))
     before_ref = os.environ.get('P3_SWITCH_BEFORE_REF')
     upstream_source = (source / 'src/nearlink_peer_upstream.cpp').read_text()
     if before_ref:
@@ -599,6 +607,7 @@ int main() {
     includes = [out, source / 'include', repo / 'interfaces/innerkits/netshareclient/include',
                 workspace / 'tethering_dhcp/interfaces/kits/c']
     exe = out / 'check.exe'
-    subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', *[f'-I{p}' for p in includes],
+    subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror=format', '-Werror=format-extra-args',
+                    *[f'-I{p}' for p in includes],
                     str(out / 'test.cpp'), '-o', str(exe), '-lws2_32'], check=True)
     subprocess.run([str(exe)], check=True)

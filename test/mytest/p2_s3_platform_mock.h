@@ -32,8 +32,11 @@ constexpr int NETMANAGER_EXT_ERR_LOCAL_PTR_NULL=-3, DHCP_SUCCESS=0;
 inline int MockStrcpyS(char *d, size_t n, const char *s) { if(strlen(s)>=n) return -1; strcpy(d,s); return 0; }
 #define strcpy_s MockStrcpyS
 inline std::vector<std::string> sharingLogCalls;
-#define NETMGR_EXT_LOG_I(format, ...) sharingLogCalls.emplace_back(format)
-#define NETMGR_EXT_LOG_E(...) ((void)0)
+inline void HostCheckSharingLog(const char *, ...) __attribute__((format(gnu_printf, 1, 2)));
+inline void HostCheckSharingLog(const char *, ...) {}
+#define NETMGR_EXT_LOG_I(format, ...) \
+    (HostCheckSharingLog(format, ##__VA_ARGS__), sharingLogCalls.emplace_back(format))
+#define NETMGR_EXT_LOG_E(...) HostCheckSharingLog(__VA_ARGS__)
 #include "nearlink_ip_share_status.h"
 namespace OHOS::NetManagerStandard {
 class INearlinkIpShareEventCallback {

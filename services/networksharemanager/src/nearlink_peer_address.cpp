@@ -342,7 +342,7 @@ bool NearlinkIpShareController::SyncGatewayMembers(const OHOS::Nearlink::Nearlin
             return !value.releasing && value.slot == it->first && value.generation == it->second.generation;
         });
         if (entry == link.peerLinks.end()) {
-            NETMGR_EXT_LOG_I("[NearlinkIpShare][SharedNetwork] member removed epoch=%{public}llu",
+            NETMGR_EXT_LOG_I("[NearlinkIpShare][SharedNetwork] member removed slot=%{public}u epoch=%{public}llu",
                              it->first, static_cast<unsigned long long>(it->second.generation));
             it = addressPeers_.erase(it);
         } else {
