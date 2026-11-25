@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace OHOS::NetManagerStandard {
 // Private Demo UDP traffic over an existing IPoSL link; not an IPoSL/SSAP extension.
@@ -18,11 +19,19 @@ public:
         uint32_t ifindex{0};
         int32_t netId{-1};
         bool ipv6{false};
+        std::string localIpv6, gatewayIpv6;
+        struct Member {
+            uint64_t generation{0};
+            std::string ipv4;
+            std::vector<std::string> ipv6;
+        };
+        std::vector<Member> members;
     };
     struct State {
         bool known{false};
         uint8_t available{0};
         uint8_t changed{0}; // Transitions received in this tick, including a loss followed by recovery.
+        bool reconfigureIpv4{false};
     };
     NearlinkUpstreamSignal();
     ~NearlinkUpstreamSignal();

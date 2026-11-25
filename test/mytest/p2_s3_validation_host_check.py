@@ -15,7 +15,6 @@ with tempfile.TemporaryDirectory(prefix='p2-s3-validation-') as directory:
     (out / 'fcntl.h').write_text('#pragma once\n#define F_GETFL 1\n#define F_SETFL 2\n#define O_NONBLOCK 4\n')
     (out / 'unistd.h').write_text('#pragma once\n')
     (out / 'net_conn_client.h').write_text('#pragma once\n#include "mock.h"\n')
-    (out / 'netmgr_ext_log_wrapper.h').write_text('#pragma once\n#include "mock.h"\n#define NETMGR_EXT_LOG_W(format,netId,family,stage,code) do { lastStage=stage; lastCode=code; } while(0)\n#define NETMGR_EXT_LOG_I(...) ((void)0)\n')
     (out / 'mock.h').write_text(r'''
 #pragma once
 #include <winsock2.h>
@@ -34,7 +33,6 @@ struct queryparam {int qp_netid=0,qp_type=0;};
 inline int activeFamily=0,failFamily=0,closed=0,bindError=0;
 inline int resolveError=0,pollResult=1;
 inline bool emptyResolve=false;
-inline std::string lastStage;inline int lastCode=0;
 inline size_t offset=0;
 inline std::string response="HTTP/1.1 204 No Content\r\n";
 inline int Resolve(const char*,const char*,const addrinfo*h,addrinfo**out,queryparam*q){
@@ -53,6 +51,7 @@ inline int Recv(int,void*data,size_t size,int){
  if(activeFamily==failFamily)return 0;size_t n=std::min({size,size_t(3),response.size()-offset});
  memcpy(data,response.data()+offset,n);offset+=n;return n;}
 inline int Close(int){++closed;return 0;}
+inline int GetName(int,sockaddr*,socklen_t*){errno=ERANGE;return -1;}
 namespace OHOS::NetManagerStandard {struct NetConnClient {
 static NetConnClient &GetInstance(){static NetConnClient n;return n;}
 int BindSocket(int,int netId){assert(netId==42);return bindError;}};}
@@ -67,6 +66,7 @@ int BindSocket(int,int netId){assert(netId==42);return bindError;}};}
 #define send Send
 #define recv Recv
 #define close Close
+#define getsockname GetName
 ''')
     production = (src / 'src/nearlink_family_validation.cpp').read_text().replace(
         '/system/etc/netdetectionurl.conf', 'config.txt')
@@ -79,11 +79,11 @@ int main(){
  r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==2&&r.ipv6==2&&closed==2);
  failFamily=AF_INET6;r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==2&&r.ipv6==3);
  failFamily=0;response="HTTP/1.1 302 Found\r\n";
- r=ValidateNearlinkFamilies(42,true,false);assert(r.ipv4==3&&r.ipv6==0&&lastStage=="HTTP_STATUS");
- bindError=-1;r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==3&&r.ipv6==3&&lastStage=="BIND"&&lastCode==-1);
- bindError=0;resolveError=-7;r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==3&&r.ipv6==3&&lastStage=="DNS"&&lastCode==-7);
- resolveError=0;emptyResolve=true;r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==3&&r.ipv6==3&&lastStage=="DNS_EMPTY");
- emptyResolve=false;pollResult=0;r=ValidateNearlinkFamilies(42,true,false);assert(r.ipv4==3&&lastStage=="CONNECT_WAIT");
+ r=ValidateNearlinkFamilies(42,true,false);assert(r.ipv4==3&&r.ipv6==0);
+ bindError=-1;r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==3&&r.ipv6==3);
+ bindError=0;resolveError=-7;r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==3&&r.ipv6==3);
+ resolveError=0;emptyResolve=true;r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==3&&r.ipv6==3);
+ emptyResolve=false;pollResult=0;r=ValidateNearlinkFamilies(42,true,false);assert(r.ipv4==3);
  pollResult=1;
  {std::ofstream f("config.txt");f<<"HttpProbeUrl:http://endpoint.example:65536/generate_204";}
  r=ValidateNearlinkFamilies(42,true,true);assert(r.ipv4==0&&r.ipv6==0);

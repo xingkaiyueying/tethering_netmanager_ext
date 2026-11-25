@@ -1,17 +1,28 @@
-/* Copyright (c) 2026 Huawei Device Co., Ltd. Licensed under the Apache License, Version 2.0. */
+/*
+ * Copyright (C) 2026 Huawei Device Co., Ltd.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 #include "nearlink_ipshare_controller.h"
 
 #include <new>
+#include "dhcp_c_api.h"
 
 #include "net_manager_constants.h"
 #include "netmgr_ext_log_wrapper.h"
 
 namespace OHOS::NetManagerStandard {
-void NearlinkIpShareController::NotifyGatewayUpstream(PeerAddressContext &peer, bool ipv4)
+void NearlinkIpShareController::NotifyGatewayUpstream(SharedNetworkContext &peer, bool ipv4)
 {
-    if (peer.releasing) {
-        return;
-    }
     if (!peer.upstreamSignal) {
         peer.upstreamSignal.reset(new (std::nothrow) NearlinkUpstreamSignal());
     }
@@ -21,9 +32,21 @@ void NearlinkIpShareController::NotifyGatewayUpstream(PeerAddressContext &peer, 
     NearlinkUpstreamSignal::Link link;
     link.iface = peer.iface;
     link.ifindex = peer.ifindex;
-    link.netId = 99; // Existing local network owns every gateway sleipN subnet route.
+    link.netId = 99;
     link.localIpv4 = peer.addressAdded ? peer.addresses.gateway : "";
     link.ipv6 = peer.mode == 3 && peer.ipv6Prepared;
+    link.localIpv6 = peer.ipv6.LinkLocal();
+    for (const auto &[slot, member] : addressPeers_) {
+        if (member.active) {
+            NearlinkUpstreamSignal::Link::Member endpoint;
+            endpoint.generation = member.generation;
+            endpoint.ipv4 = member.ipv4Address;
+            for (const auto &address : member.ipv6Addresses) {
+                endpoint.ipv6.push_back(address.address);
+            }
+            link.members.push_back(endpoint);
+        }
+    }
     uint8_t available =
         (ipv4 ? NearlinkUpstreamSignal::IPV4 : 0) | (peer.ipv6Routed ? NearlinkUpstreamSignal::IPV6 : 0);
     peer.upstreamSignal->Gateway(link, available);
@@ -62,6 +85,15 @@ bool NearlinkIpShareController::PollTerminalUpstream()
     link.iface = "sleip0";
     link.ifindex = interfaceIndex_;
     link.ipv6 = dualStack_ && ipv6Prepared_;
+    link.localIpv6 = ipv6Runtime_.LinkLocal();
+    for (const auto &route : families_.ipv6.routeList_) {
+        if (route.destination_.prefixlen_ == 0) {
+            link.gatewayIpv6 = route.gateway_.address_;
+        }
+    }
+    if (link.gatewayIpv6.empty()) {
+        link.gatewayIpv6 = "fe80::1";
+    }
     if (!families_.ipv4.netAddrList_.empty()) {
         link.localIpv4 = families_.ipv4.netAddrList_.front().address_;
     }
@@ -75,6 +107,17 @@ bool NearlinkIpShareController::PollTerminalUpstream()
         link.netId = status_.netId;
     }
     const auto next = upstreamSignal_.Terminal(link);
+    if (next.reconfigureIpv4) {
+        // Preserve IPv6 while restarting only the DHCPv4 client and its network projection.
+        int32_t ret = StopDhcpClient("sleip0", false, true);
+        NETMGR_EXT_LOG_I("[NearlinkIpShare][SharedNetwork] terminal IPv4 reacquire code=%{public}d", ret);
+        if (ret == DHCP_SUCCESS) {
+            FamilyFailure(false, "SHARED_SUBNET", NETMANAGER_EXT_ERR_OPERATION_FAILED);
+            retryIpv4_ = true;
+            nextDhcpRetry_ = {};
+            RetryTerminalDhcp();
+        }
+    }
     {
         std::lock_guard lock(mutex_);
         if (next.known == gatewayUpstream_.known && next.available == gatewayUpstream_.available && !next.changed) {

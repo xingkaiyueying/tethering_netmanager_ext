@@ -1,4 +1,17 @@
-/* Copyright (c) 2026 Huawei Device Co., Ltd. Licensed under the Apache License, Version 2.0. */
+/*
+ * Copyright (C) 2026 Huawei Device Co., Ltd.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 #include "nearlink_ipshare_controller.h"
 #include "net_manager_constants.h"
 #include "netmgr_ext_log_wrapper.h"
@@ -7,7 +20,7 @@
 #include <cerrno>
 
 namespace OHOS::NetManagerStandard {
-int32_t NearlinkIpShareController::CleanupGatewayPeerUpstream(PeerAddressContext &peer)
+int32_t NearlinkIpShareController::CleanupGatewayPeerUpstream(SharedNetworkContext &peer)
 {
     auto &netsys = NetsysController::GetInstance();
     const bool owned = peer.natEnabled || peer.natAttempted || peer.interfaceForwarding || peer.forwardAttempted;
@@ -36,15 +49,15 @@ int32_t NearlinkIpShareController::CleanupGatewayPeerUpstream(PeerAddressContext
     peer.upstreamError = error;
     if (owned && (error == 0 || error != previousError)) {
         NETMGR_EXT_LOG_I(
-            "[NearlinkIpShare][PeerUpstreamCleanup] slot=%{public}u generation=%{public}llu "
+            "[NearlinkIpShare][PeerUpstreamCleanup] generation=%{public}llu "
             "iface=%{public}s nat=%{public}d forward=%{public}d code=%{public}d",
-            peer.slot, static_cast<unsigned long long>(peer.generation), peer.iface.c_str(), peer.natEnabled,
+            static_cast<unsigned long long>(peer.generation), peer.iface.c_str(), peer.natEnabled,
             peer.interfaceForwarding, error);
     }
     return error;
 }
 
-bool NearlinkIpShareController::PrepareGatewayPeerIpv6(PeerAddressContext &peer, const NetLinkInfo *upstream,
+bool NearlinkIpShareController::PrepareGatewayPeerIpv6(SharedNetworkContext &peer, const NetLinkInfo *upstream,
                                                        bool present)
 {
     std::string prefix;
@@ -52,13 +65,13 @@ bool NearlinkIpShareController::PrepareGatewayPeerIpv6(PeerAddressContext &peer,
     const auto &pool = configuration_.GetNearlinkIpv6RoutedPool();
     if (present) {
         if (pool.empty()) {
-            // Preserve P2 automatic prefix derivation, with a unique /64 for each stable slot.
-            prefix = NearlinkIpv6Runtime::DeriveGatewayPrefix(upstream, peer.slot);
+            // Preserve P2 automatic prefix derivation, with one /64 for this shared link.
+            prefix = NearlinkIpv6Runtime::DeriveGatewayPrefix(upstream);
             provisioned = !prefix.empty();
         } else if (configuration_.GetNearlinkIpv6RoutedUpstream() == upstreamIface_) {
             NearlinkPeerAddresses routed;
             provisioned = NearlinkPeerAddresses::Allocate(configuration_.GetNearlinkIpv4Pool(), pool, maxTerminals_,
-                                                          peer.slot, routed, true);
+                                                          routed, true);
             if (provisioned) {
                 prefix = routed.prefix;
             }
@@ -76,11 +89,6 @@ bool NearlinkIpShareController::PrepareGatewayPeerIpv6(PeerAddressContext &peer,
             }
         }
     }
-    for (const auto &[otherSlot, other] : addressPeers_) {
-        if (otherSlot != peer.slot && other.ipv6.OwnsPrefix(prefix)) {
-            provisioned = false;
-        }
-    }
     if (!provisioned) {
         prefix = peer.ipv6.HasPrefix() ? peer.ipv6.CurrentPrefix() : peer.addresses.prefix;
     }
@@ -91,7 +99,7 @@ bool NearlinkIpShareController::PrepareGatewayPeerIpv6(PeerAddressContext &peer,
     return provisioned;
 }
 
-bool NearlinkIpShareController::ConfigureGatewayPeerUpstream(PeerAddressContext &peer, const NetLinkInfo *upstream,
+bool NearlinkIpShareController::ConfigureGatewayPeerUpstream(SharedNetworkContext &peer, const NetLinkInfo *upstream,
                                                              bool present, bool hasV4)
 {
     auto &netsys = NetsysController::GetInstance();
@@ -101,10 +109,6 @@ bool NearlinkIpShareController::ConfigureGatewayPeerUpstream(PeerAddressContext 
     const bool hadNat = peer.natEnabled;
     const bool wasIpv6Ready = peer.ipv6Ready;
     const bool wasIpv6Routed = peer.ipv6Routed;
-    if (peer.releasing) {
-        CleanupGatewayPeerUpstream(peer);
-        return false;
-    }
     bool usable = present && forwardingEnabled_ && (peer.dhcpStarted || peer.ipv6Prepared);
     if ((!usable || peer.upstreamIface != upstreamIface_ || peer.upstreamNetId != upstreamNetId_) &&
         CleanupGatewayPeerUpstream(peer) != 0) {
@@ -165,10 +169,10 @@ bool NearlinkIpShareController::ConfigureGatewayPeerUpstream(PeerAddressContext 
         hadForwarding != peer.interfaceForwarding || hadNat != peer.natEnabled || wasIpv6Ready != peer.ipv6Ready ||
         wasIpv6Routed != peer.ipv6Routed) {
         NETMGR_EXT_LOG_I(
-            "[NearlinkIpShare][PeerUpstream] slot=%{public}u iface=%{public}s "
+            "[NearlinkIpShare][PeerUpstream] iface=%{public}s "
             "netId=%{public}d forward=%{public}d nat=%{public}d ipv6Ready=%{public}d "
             "ipv6Routed=%{public}d code=%{public}d",
-            peer.slot, peer.iface.c_str(), peer.upstreamNetId, peer.interfaceForwarding, peer.natEnabled,
+            peer.iface.c_str(), peer.upstreamNetId, peer.interfaceForwarding, peer.natEnabled,
             peer.ipv6Ready, peer.ipv6Routed, peer.upstreamError);
     }
     NotifyGatewayUpstream(peer, forwarding && peer.natEnabled && hasV4 && peer.ipv4Error == 0 &&
@@ -178,6 +182,12 @@ bool NearlinkIpShareController::ConfigureGatewayPeerUpstream(PeerAddressContext 
 
 void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo *upstream, int32_t netId)
 {
+    {
+        std::lock_guard lock(mutex_);
+        if (stopRequested_ || shuttingDown_) {
+            return;
+        }
+    }
     auto &netsys = NetsysController::GetInstance();
     // Forwarding/isolation and DNS belong to G, including its zero-peer listening state.
     if (!forwardingEnabled_) {
@@ -191,7 +201,7 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
         dnsProxyStarted_ = netsys.StartDnsProxyListen() == 0;
     }
     bool present =
-        upstream && netId >= 0 && !upstream->ifaceName_.empty() && upstream->ifaceName_.compare(0, 5, "sleip") != 0;
+        upstream && netId >= 0 && !upstream->ifaceName_.empty() && upstream->ifaceName_ != "sleip0";
     int32_t dnsRet = dnsProxyStarted_ ? netsys.ShareDnsSet(present ? netId : 0) : -1;
     dnsUpstreamReady_ = present && dnsRet == 0;
     upstreamNetId_ = present ? netId : -1;
@@ -205,25 +215,14 @@ void NearlinkIpShareController::ConfigureGatewayPeerUpstreams(const NetLinkInfo 
     if (present && !hasV4) {
         hasV4 = NearlinkIpv6Runtime::HasDefaultRouteOnInterface(upstreamIface_, AF_INET);
     }
-    bool anyForward = false;
-    for (auto &[slot, peer] : addressPeers_) {
-        {
-            std::lock_guard lock(mutex_);
-            if (stopRequested_ || shuttingDown_) {
-                return;
-            }
-        }
-        anyForward = ConfigureGatewayPeerUpstream(peer, upstream, present, hasV4) || anyForward;
-    }
+    bool anyForward = ConfigureGatewayPeerUpstream(gatewayNetwork_, upstream, present, hasV4);
     {
         std::lock_guard lock(mutex_);
         status_.hasUpstream = present && forwardingEnabled_ && (addressPeers_.empty() || anyForward);
         // Gateway rules are configuration evidence. End-to-end validation remains terminal-side.
         status_.ipv4.externalAvailable = status_.ipv6.externalAvailable = false;
-        auto projected = std::find_if(addressPeers_.begin(), addressPeers_.end(),
-                                      [](const auto &item) { return !item.second.releasing; });
-        if (projected != addressPeers_.end()) {
-            const auto &peer = projected->second;
+        if (gatewayNetwork_.generation) {
+            const auto &peer = gatewayNetwork_;
             bool v4Ready = peer.ipv4Error == 0 && peer.interfaceForwarding && peer.natEnabled && hasV4;
             status_.ipv4.hasError = peer.ipv4Error != 0 || (present && (!v4Ready || dnsRet != 0));
             status_.ipv4.error = {};

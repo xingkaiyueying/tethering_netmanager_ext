@@ -1,4 +1,17 @@
-/* Copyright (c) 2026 Huawei Device Co., Ltd. Licensed under the Apache License, Version 2.0. */
+/*
+ * Copyright (C) 2026 Huawei Device Co., Ltd.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 #ifndef NEARLINK_PEER_ADDRESS_POOL_H
 #define NEARLINK_PEER_ADDRESS_POOL_H
 #include <arpa/inet.h>
@@ -6,7 +19,7 @@
 #include <string>
 
 namespace OHOS::NetManagerStandard {
-// Product CIDR pools; one /24 and one /64 per seat. No public DHCP layout changes.
+// Product CIDR pools; one /24 and one /64 per shared gateway session. No public DHCP layout changes.
 struct NearlinkPeerAddresses {
     std::string gateway, start, end, subnet, prefix;
     static bool ParsePool(const std::string &cidr, int family, uint8_t *binary, unsigned &bits)
@@ -32,13 +45,13 @@ struct NearlinkPeerAddresses {
         }
         return true;
     }
-    static bool Allocate(const std::string &v4, const std::string &v6, unsigned capacity, unsigned slot,
+    static bool Allocate(const std::string &v4, const std::string &v6, unsigned capacity,
                          NearlinkPeerAddresses &out, bool dual)
     {
         uint8_t ipv4[4]{}, ipv6[16]{};
         unsigned bits = 0;
-        if (!capacity || capacity > 32 || slot >= capacity || !ParsePool(v4, AF_INET, ipv4, bits) || bits < 8 ||
-            bits > 24 || capacity > (1u << (24 - bits))) {
+        if (!capacity || capacity > 32 || !ParsePool(v4, AF_INET, ipv4, bits) || bits < 8 ||
+            bits > 24) {
             return false;
         }
         // RFC1918 only; reject public, loopback, multicast and link-local pools.
@@ -46,27 +59,23 @@ struct NearlinkPeerAddresses {
               (ipv4[0] == 192 && ipv4[1] == 168))) {
             return false;
         }
-        uint32_t base = (uint32_t(ipv4[0]) << 24) | (uint32_t(ipv4[1]) << 16) | (uint32_t(ipv4[2]) << 8) | ipv4[3];
-        base += slot * 256;
+        uint32_t base = (static_cast<uint32_t>(ipv4[0]) << 24) | (static_cast<uint32_t>(ipv4[1]) << 16) | (static_cast<uint32_t>(ipv4[2]) << 8) | ipv4[3];
+        // Every seat joins the same subnet. The controller selects the session subnet.
         auto text = [](uint32_t n) {
             return std::to_string(n >> 24) + "." + std::to_string((n >> 16) & 255) + "." +
                    std::to_string((n >> 8) & 255) + "." + std::to_string(n & 255);
         };
         out.gateway = text(base + 1);
         out.start = text(base + 2);
-        out.end = text(base + 20);
+        out.end = text(base + 254);
         out.subnet = text(base) + "/24";
         out.prefix.clear();
         if (!dual) {
             return true;
         }
         if (!ParsePool(v6, AF_INET6, ipv6, bits) || bits < 32 || bits > 64 ||
-            (bits > 59 && capacity > (1u << (64 - bits))) || !((ipv6[0] & 0xfe) == 0xfc || (ipv6[0] & 0xe0) == 0x20)) {
+            !((ipv6[0] & 0xfe) == 0xfc || (ipv6[0] & 0xe0) == 0x20)) {
             return false;
-        }
-        // Canonical pool has zero host bits, so slot occupies the low subnet bits.
-        for (unsigned i = 0; i < 4; ++i) {
-            ipv6[7 - i] |= (slot >> (8 * i)) & 255;
         }
         char buffer[INET6_ADDRSTRLEN]{};
         if (!inet_ntop(AF_INET6, ipv6, buffer, sizeof(buffer))) {
